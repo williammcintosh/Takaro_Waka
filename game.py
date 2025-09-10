@@ -12,7 +12,7 @@ BRAKE = 0.95
 
 
 class Waka:
-    def __init__(self, x, y, fps=8, splash_snd=None):
+    def __init__(self, x, y, fps=8, splash_snds=None):
         self.x, self.y = x, y
         self.ang = -90
         self.vx, self.vy = 0.0, 0.0
@@ -22,7 +22,11 @@ class Waka:
         self.frame_ms = int(1000 / fps)
         self.last_frame_tick = pygame.time.get_ticks()
         self.rowing = False
-        self.net_img = pygame.image.load("images/waka/wakanet__1.png").convert_alpha()
+        self.net_frames = [
+            pygame.image.load("images/waka/wakanet__1.png").convert_alpha(),
+            pygame.image.load("images/waka/wakanet__2.png").convert_alpha(),
+            pygame.image.load("images/waka/wakanet__3.png").convert_alpha(),
+        ]
         self.last_boost_t = 0
         self.boost_ms = 140
         self.BOOST = THRUST * 10  # tweak to taste
@@ -33,16 +37,18 @@ class Waka:
         self.STROKE_MS = 300  # length of one stroke
         self.STROKE_THRUST = THRUST * 2.8  # tweak
         self.stroke_frame_ms = max(1, int(self.STROKE_MS / len(self.frames)))
-        self.splash_snd = splash_snd
-        self.splash_cd = 180  # ms
-        self.splash_snd = splash_snd
+        self.splash_snds = splash_snds
         self.splash_cd = 260  # ms between splashes
         self.last_splash = 0
         self.splash_ch = pygame.mixer.Channel(1)  # dedicated channel
+        self.net_idx = 0            # 0..2
+        self.net_state = "idle"     # idle, extending, held, retracting
+        self.last_net_tick = pygame.time.get_ticks()
+        self.net_frame_ms = 90
 
 
     def net_active(self):
-        return pygame.time.get_ticks() - self.net_flash_t < 120
+        return self.net_idx > 0 or self.net_state in ("extending", "held")
 
     def handle_input(self, keys):
         if keys[pygame.K_LEFT]:
@@ -54,8 +60,6 @@ class Waka:
         if keys[pygame.K_DOWN]:
             self.vx *= BRAKE
             self.vy *= BRAKE
-        if keys[pygame.K_SPACE]:
-            self.net_flash_t = pygame.time.get_ticks()
 
     def finish_stroke(self):
         now = pygame.time.get_ticks()
@@ -76,13 +80,16 @@ class Waka:
 
     def update(self):
         now = pygame.time.get_ticks()
-        # movement, Cant row if nets are up
+
+        # nets animate first
+        self._update_nets()
+
+        # movement, cannot row if nets are out
         if self.stroking and not self.net_active() and now - self.stroke_start <= self.STROKE_MS:
             r = math.radians(self.ang)
             self.vx += math.cos(r) * self.STROKE_THRUST
             self.vy += math.sin(r) * self.STROKE_THRUST
             self.rowing = True
-            # self._play_splash()
             if now - self.last_frame_tick >= self.stroke_frame_ms:
                 self.frame_idx = (self.frame_idx + 1) % len(self.frames)
                 self.last_frame_tick = now
@@ -98,22 +105,35 @@ class Waka:
         if self.y < 0: self.y += H
         if self.y > H: self.y -= H
 
+
     def _play_splash(self):
-        if not self.splash_snd: return
+        if not self.splash_snds:
+            return
         now = pygame.time.get_ticks()
-        if now - self.last_splash < self.splash_cd:  # keep a small cooldown
+        if now - self.last_splash < self.splash_cd:
             return
         self.last_splash = now
-
-        ch = pygame.mixer.find_channel()  # pick a free one
-        if not ch: return                  # all busy, skip this stroke
-
-        vol = random.uniform(0.85, 1.0)
-        l = random.uniform(0.9, 1.0); r = random.uniform(0.9, 1.0)
-        ch.set_volume(vol*l, vol*r)
-        ch.play(self.splash_snd)
+        snd = random.choice(self.splash_snds)
+        snd.play()
 
 
+    # --- nets animation stepper, add inside Waka ---
+    def _update_nets(self):
+        now = pygame.time.get_ticks()
+        if now - self.last_net_tick < self.net_frame_ms:
+            return
+        self.last_net_tick = now
+
+        if self.net_state == "extending":
+            if self.net_idx < 2:
+                self.net_idx += 1
+            else:
+                self.net_state = "held"
+        elif self.net_state == "retracting":
+            if self.net_idx > 0:
+                self.net_idx -= 1
+            else:
+                self.net_state = "idle"
 
     def draw(self, screen):
         img = self.frames[self.frame_idx]
@@ -121,46 +141,53 @@ class Waka:
         rect = rotated.get_rect(center=(self.x, self.y))
         screen.blit(rotated, rect.topleft)
 
-        if pygame.time.get_ticks() - self.net_flash_t < 120:
-            net_rot = pygame.transform.rotate(self.net_img, -self.ang-90)
+        if self.net_active():
+            net_img = self.net_frames[self.net_idx]
+            net_rot = pygame.transform.rotate(net_img, -self.ang-90)
             net_rect = net_rot.get_rect(center=(self.x, self.y))
             screen.blit(net_rot, net_rect.topleft)
 
     def try_catch(self, fish):
-        # only during cast window
-        if not fish or pygame.time.get_ticks() - self.net_flash_t >= 120:
+        if not fish or not self.net_active():
             return False
 
-        # rotate net like in draw
-        net_rot = pygame.transform.rotate(self.net_img, -self.ang-90)
+        net_img = self.net_frames[self.net_idx]
+        net_rot = pygame.transform.rotate(net_img, -self.ang-90)
         net_rect = net_rot.get_rect(center=(int(self.x), int(self.y)))
 
-        # fish current frame and rect
         fish_img = fish.frames[fish.frame_idx]
         fish_rect = fish_img.get_rect(center=(int(fish.x), int(fish.y)))
 
-        # pixel masks
         net_mask = pygame.mask.from_surface(net_rot)
         fish_mask = pygame.mask.from_surface(fish_img)
-
-        # offset of fish relative to net
         offset = (fish_rect.left - net_rect.left, fish_rect.top - net_rect.top)
-
         return net_mask.overlap(fish_mask, offset) is not None
     
 
 
 class Fish:
-
-    def __init__(self, x, y, life=FISH_LIFE, fps=10, scale=1.0):
+    def __init__(self, x, y, life=FISH_LIFE, fps=10, scale=1.0,
+                 splash_snds=None, splash_delay_ms=None, splash_frame=12):
         self.x, self.y = float(x), float(y)
         self.expires_at = time.time() + life
-        self.frames = [pygame.image.load(f"images/fishy/fish__{i}.png").convert_alpha() for i in range(1, 28)]
+        self.frames = [pygame.image.load(f"images/fishy/fish__{i}.png").convert_alpha()
+                       for i in range(1, 28)]
         if scale != 1.0:
-            self.frames = [pygame.transform.smoothscale(f, (int(f.get_width()*scale), int(f.get_height()*scale))) for f in self.frames]
+            self.frames = [
+                pygame.transform.smoothscale(
+                    f, (int(f.get_width()*scale), int(f.get_height()*scale))
+                ) for f in self.frames
+            ]
         self.frame_idx = 0
         self.frame_ms = int(1000 / fps)
         self.last_frame_tick = pygame.time.get_ticks()
+
+        # sounds
+        self.splash_snds = splash_snds or []  # safe default
+        self.spawn_tick = pygame.time.get_ticks()
+        self.splash_delay_ms = splash_delay_ms
+        self.splash_frame = splash_frame
+        self.splash_played = False
 
     @property
     def alive(self):
@@ -171,6 +198,19 @@ class Fish:
         if now - self.last_frame_tick >= self.frame_ms:
             self.frame_idx = (self.frame_idx + 1) % len(self.frames)
             self.last_frame_tick = now
+        self._maybe_play_splash(now)
+
+    def _maybe_play_splash(self, now):
+        if self.splash_played or not self.alive or not self.splash_snds:
+            return
+        if self.splash_delay_ms is not None:
+            if now - self.spawn_tick >= self.splash_delay_ms:
+                random.choice(self.splash_snds).play()
+                self.splash_played = True
+        else:
+            if self.frame_idx >= self.splash_frame:
+                random.choice(self.splash_snds).play()
+                self.splash_played = True
 
     def draw(self, screen):
         img = self.frames[self.frame_idx]
@@ -206,7 +246,21 @@ async def main():
     pygame.mixer.init()
     pygame.mixer.set_num_channels(16)  # more heads to play on
     coin = pygame.mixer.Sound("sounds/get-coin.mp3")
-    splash_snd = pygame.mixer.Sound("sounds/row_splash.mp3")
+    # in main() when you load sounds
+    row_spalshes = [
+        pygame.mixer.Sound(f"sounds/row_splash__{i}.mp3") for i in range(1, 8)
+    ]
+    fish_splashes = [
+        pygame.mixer.Sound(f"sounds/fish_splash__{i}.mp3")
+        for i in range(1, 7)
+    ]
+    net_flips = [
+        pygame.mixer.Sound(f"sounds/net_flip__{i}.mp3")
+        for i in range(1, 5)
+    ]
+    for n in net_flips: n.set_volume(0.8)
+    for s in fish_splashes: s.set_volume(0.9)
+    for r in row_spalshes: r.set_volume(0.3)
     count = {
         1: pygame.mixer.Sound("sounds/tahi_ika.mp3"),
         2: pygame.mixer.Sound("sounds/rua_ika.mp3"),
@@ -221,7 +275,7 @@ async def main():
     clock = pygame.time.Clock()
     font = pygame.font.SysFont(None, 24)
 
-    waka = Waka(W/2, H/2, splash_snd=splash_snd)
+    waka = Waka(W/2, H/2, splash_snds=row_spalshes)
     fish = None
     score = 0
     start = time.time()
@@ -230,7 +284,8 @@ async def main():
     running = True
     while running:
         for e in pygame.event.get():
-            if e.type == pygame.QUIT: running = False
+            if e.type == pygame.QUIT:
+                running = False
             elif e.type == pygame.KEYDOWN and e.key == pygame.K_UP:
                 if not waka.stroking and not waka.net_active():
                     waka.stroking = True
@@ -239,13 +294,31 @@ async def main():
             elif e.type == pygame.KEYUP and e.key == pygame.K_UP:
                 waka.stroking = False
 
+            # nets control
+            elif e.type == pygame.KEYDOWN and e.key == pygame.K_SPACE:
+                random.choice(net_flips).play()
+                if waka.net_state in ("idle", "retracting"):
+                    waka.net_state = "extending"
+            elif e.type == pygame.KEYUP and e.key == pygame.K_SPACE:
+                random.choice(net_flips).play()
+                if waka.net_state in ("extending", "held"):
+                    waka.net_state = "retracting"
+
         keys = pygame.key.get_pressed()
         waka.handle_input(keys)
         waka.update()
 
         now = time.time()
         if fish is None and random.random() < 0.02:
-            fish = Fish(random.randint(40, W-40), random.randint(40, H-40), life=FISH_LIFE, fps=8, scale=0.9)
+            fish = Fish(
+                random.randint(40, W-40),
+                random.randint(40, H-40),
+                life=FISH_LIFE,
+                fps=8,
+                scale=0.9,
+                splash_snds=fish_splashes,
+                splash_delay_ms=2000   # optional, only if you want a timed delay
+            )
         elif fish and not fish.alive:
             fish = None
 
