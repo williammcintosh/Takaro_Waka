@@ -8,12 +8,16 @@ ROT_SPEED = 3.0
 THRUST = 0.12
 FRICTION = 0.99
 BRAKE = 0.95
+WHITE = (255,255,255)
+LIGHT_BG = (245,245,245)
+MAORI_RED = (212,0,0)
 
 pygame.init()
 TITLE = "Tākaro Waka"
 SUBTITLE = "it's matariki time!"
-border_img = pygame.image.load("images/borders/maori_koru_border.png")
-border_img = pygame.transform.smoothscale(border_img, (W, H))
+
+
+border_png = pygame.image.load("images/borders/maori_koru_border.png")
 screen = pygame.display.set_mode((W, H))
 fish_imgs = [pygame.image.load(f"images/fishy/fish__{i}.png").convert_alpha()
                 for i in range(1, 28)]
@@ -275,8 +279,8 @@ class WakeTrail:
         self.last_spawn = now
         # drop a bit behind the waka nose
         r = math.radians(ang)
-        px = x - math.cos(r)*24
-        py = y - math.sin(r)*24
+        px = x - math.cos(r)*100
+        py = y - math.sin(r)*100
         self.parts.append({"x": px, "y": py, "ang": ang, "t": 0})
         if len(self.parts) > self.max_parts: self.parts.pop(0)
 
@@ -292,120 +296,165 @@ class WakeTrail:
             img.set_alpha(int(160*a))
             screen.blit(img, img.get_rect(center=(p["x"], p["y"])))
 
+class UiKit:
+    def __init__(self, screen, border_surface,
+                 button_fill=(212,0,0), text_color=(255,255,255),
+                 outline_idle=(30,30,30), radius=14,
+                 bg_color=(245,245,245), font_name=None, font_sizes=None):
+        self.screen = screen
+        self.border_src = border_surface.convert_alpha()
+        self.button_fill = button_fill
+        self.text_color = text_color
+        self.outline_idle = outline_idle
+        self.radius = radius
+        self.bg_color = bg_color
+        self._border_cache = {}
 
-def make_button(font, text):
-    surf = font.render(text, True, (20,20,20))
-    pad = 18
-    rect = surf.get_rect()
-    box = pygame.Rect(0,0,rect.w+pad*2, rect.h+pad*2)
-    return surf, rect, box
+        # fonts
+        h = max(1, screen.get_height())
+        scale = max(0.6, h / 680.0)
+        base = {"title": 96, "subtitle": 56, "button": 48, "hud": 24}
+        if font_sizes:
+            base.update(font_sizes)
+        self.fonts = {
+            k: pygame.font.SysFont(font_name, max(12, int(v*scale)))
+            for k, v in base.items()
+        }
 
-def draw_button(screen, center, surf, rect, box, hovered):
-    box.center = center
-    rect.center = center
-    pygame.draw.rect(screen, (240,240,240), box, border_radius=12)
-    if hovered:
-        pygame.draw.rect(screen, (40,160,220), box, width=4, border_radius=12)
-    else:
-        pygame.draw.rect(screen, (80,80,80), box, width=3, border_radius=12)
-    screen.blit(surf, rect.topleft)
+    def font(self, key): return self.fonts[key]
 
-async def show_menu():
-    clock = pygame.time.Clock()
-    title_font = pygame.font.SysFont(None, 96)
-    sub_font   = pygame.font.SysFont(None, 56)
-    btn_font   = pygame.font.SysFont(None, 48)
+    def render_center(self, key, text, color, center):
+        surf = self.fonts[key].render(text, True, color)
+        rect = surf.get_rect(center=center)
+        self.screen.blit(surf, rect)
+        return rect
 
-    play_btn   = make_button(btn_font, "Play")
-    how_btn    = make_button(btn_font, "How to play")
-    quit_btn   = make_button(btn_font, "Quit")
-
-    while True:
-        dt = clock.tick(FPS)
-        mouse = pygame.mouse.get_pos()
-        clicked = False
-
-        for e in pygame.event.get():
-            if e.type == pygame.QUIT:
-                return "quit"
-            if e.type == pygame.KEYDOWN:
-                if e.key == pygame.K_RETURN:
-                    return "play"
-                if e.key == pygame.K_ESCAPE:
-                    return "quit"
-                if e.key == pygame.K_h:
-                    pass  # stub
-            if e.type == pygame.MOUSEBUTTONDOWN and e.button == 1:
-                clicked = True
-
-        screen.fill((10, 20, 35))
-        screen.blit(border_img, (0,0))
-        # slight overlay for readability
-        overlay = pygame.Surface((W,H), pygame.SRCALPHA)
-        overlay.fill((0,0,0,120))
-        screen.blit(overlay, (0,0))
-
-        # titles
-        t1 = title_font.render(TITLE, True, (255, 235, 120))
-        t2 = sub_font.render(SUBTITLE, True, (255,255,255))
-        screen.blit(t1, t1.get_rect(center=(W//2, H//2-160)))
-        screen.blit(t2, t2.get_rect(center=(W//2, H//2-100)))
-
-        # buttons
-        centers = [(W//2, H//2+10), (W//2, H//2+90), (W//2, H//2+170)]
-        labels = [play_btn, how_btn, quit_btn]
-        names = ["play","how","quit"]
-        choice = None
-
-        for (surf, rect, box), cname, ctr in zip(labels, names, centers):
-            hovered = pygame.Rect(0,0, box.w, box.h)
-            hovered.center = ctr
-            is_over = hovered.collidepoint(mouse)
-            draw_button(screen, ctr, surf, rect, box, is_over)
-            if is_over and clicked:
-                choice = cname
-
-        pygame.display.flip()
-        await asyncio.sleep(0)
-
-        if choice == "play":
-            return "play"
-        if choice == "quit":
-            return "quit"
-        if choice == "how":
-            # flash a tiny toast
-            toast = sub_font.render("How to play coming soon", True, (255,255,255))
-            screen.blit(toast, toast.get_rect(center=(W//2, H//2-40)))
-            pygame.display.flip()
-            await asyncio.sleep(0.8)
-
-
-def get_sky_color(start_time, cycle_length=60):
-    now = time.time()
-    elapsed = now - start_time
-    stops = [
-        (0, (135,206,250)),
-        (0.25, (0,191,255)),
-        (0.5, (255,127,80)),
-        (1.0, (0,0,20))
-    ]
-    t = min(elapsed / cycle_length, 1.0)
-    for i in range(len(stops)-1):
-        t0, c0 = stops[i]
-        t1, c1 = stops[i+1]
-        if t0 <= t <= t1:
-            f = (t - t0) / (t1 - t0)
-            return (
-                int(c0[0] + (c1[0]-c0[0])*f),
-                int(c0[1] + (c1[1]-c0[1])*f),
-                int(c0[2] + (c1[2]-c0[2])*f),
+    def _draw_border(self, scale=0.8):
+        if scale not in self._border_cache:
+            bw, bh = self.border_src.get_size()
+            surf = pygame.transform.smoothscale(
+                self.border_src, (int(bw*scale), int(bh*scale))
             )
-    return stops[-1][1]
+            self._border_cache[scale] = surf
+        img = self._border_cache[scale]
+        rect = img.get_rect(center=(self.screen.get_width()//2,
+                                    self.screen.get_height()//2))
+        return img, rect
+
+    def _make_button(self, text, pad=18):
+        surf = self.fonts["button"].render(text, True, self.text_color)
+        rect = surf.get_rect()
+        box = pygame.Rect(0, 0, rect.w + pad*2, rect.h + pad*2)
+        return surf, rect, box
+
+    def _draw_button(self, center, surf, rect, box, hovered):
+        box.center = center
+        rect.center = center
+        pygame.draw.rect(self.screen, self.button_fill, box, border_radius=self.radius)
+        pygame.draw.rect(self.screen, (255,255,255) if hovered else self.outline_idle,
+                         box, width=4, border_radius=self.radius)
+        self.screen.blit(surf, rect.topleft)
+
+    async def show_menu(self, title, subtitle, items, border_scale=0.9, overlay_alpha=120, fps=60):
+        """
+        items is list of (label, value). Returns chosen value: e.g. "play" | "how" | "quit"
+        """
+        clock = pygame.time.Clock()
+        # build buttons once
+        btns = [self._make_button(lbl) for (lbl, _) in items]
+
+        while True:
+            dt = clock.tick(fps)
+            mouse = pygame.mouse.get_pos()
+            clicked = False
+            choice = None
+
+            for e in pygame.event.get():
+                if e.type == pygame.QUIT:
+                    return "quit"
+                if e.type == pygame.KEYDOWN:
+                    if e.key == pygame.K_RETURN:
+                        return items[0][1]  # default to first item
+                    if e.key == pygame.K_ESCAPE:
+                        return "quit"
+                    if e.key == pygame.K_h:
+                        # optional hotkey for how to play if present
+                        for lbl, val in items:
+                            if lbl.lower().startswith("how"):
+                                return val
+                if e.type == pygame.MOUSEBUTTONDOWN and e.button == 1:
+                    clicked = True
+
+            # background + border
+            self.screen.fill(self.bg_color)
+            bimg, brect = self._draw_border(border_scale)
+            self.screen.blit(bimg, brect)
+
+            # overlay
+            overlay = pygame.Surface((self.screen.get_width(), self.screen.get_height()), pygame.SRCALPHA)
+            overlay.fill((0,0,0,overlay_alpha))
+            self.screen.blit(overlay, (0,0))
+
+            # titles
+            cx, cy = self.screen.get_width()//2, self.screen.get_height()//2
+            self.render_center("title", title, (255,235,120), (cx, cy-160))
+            self.render_center("subtitle", subtitle, (255,255,255), (cx, cy-100))
+
+            # buttons
+            spacing = 80
+            start_y = cy + 10
+            centers = [(cx, start_y + i*spacing) for i in range(len(btns))]
+            for (surf, rect, box), (_, val), ctr in zip(btns, items, centers):
+                hit = pygame.Rect(0,0, box.w, box.h); hit.center = ctr
+                over = hit.collidepoint(mouse)
+                self._draw_button(ctr, surf, rect, box, over)
+                if over and clicked:
+                    choice = val
+
+            pygame.display.flip()
+            await asyncio.sleep(0)
+
+            if choice:
+                return choice
+    
+    def sky_color(self, start_time, cycle_length=60, stops=None):
+        """
+        Returns an (r,g,b) based on elapsed time across color stops.
+        """
+        if stops is None:
+            stops = [
+                (0.00, (135,206,250)),  # morning
+                (0.25, (0,191,255)),    # day
+                (0.50, (255,127,80)),   # sunset
+                (1.00, (0,0,20)),       # night
+            ]
+        elapsed = time.time() - start_time
+        t = max(0.0, min(1.0, elapsed / float(cycle_length)))
+        for i in range(len(stops) - 1):
+            t0, c0 = stops[i]
+            t1, c1 = stops[i+1]
+            if t0 <= t <= t1:
+                f = (t - t0) / (t1 - t0) if t1 > t0 else 1.0
+                return (
+                    int(c0[0] + (c1[0]-c0[0]) * f),
+                    int(c0[1] + (c1[1]-c0[1]) * f),
+                    int(c0[2] + (c1[2]-c0[2]) * f),
+                )
+        return stops[-1][1]
+
+    def fill_sky(self, start_time, cycle_length=60, stops=None):
+        self.screen.fill(self.sky_color(start_time, cycle_length, stops))
+
+
+
+
 
 
 async def main():
     pygame.mixer.init()
     pygame.mixer.set_num_channels(16)  # more heads to play on
+    ui = UiKit(screen, border_png, button_fill=MAORI_RED, text_color=WHITE, bg_color=LIGHT_BG)
+
     coin = pygame.mixer.Sound("sounds/get-coin.mp3")
     # in main() when you load sounds
     row_spalshes = [
@@ -433,7 +482,7 @@ async def main():
     for s in fish_splashes: s.set_volume(0.9)
     for r in row_spalshes: r.set_volume(0.3)
 
-    choice = await show_menu()
+    choice = await ui.show_menu(TITLE, SUBTITLE, [("Play","play"), ("How to play","how"), ("Quit","quit")])
     if choice == "quit":
         pygame.quit()
         return
@@ -495,7 +544,7 @@ async def main():
                 fps=8,
                 scale=0.9,
                 splash_snds=fish_splashes,
-                splash_delay_ms=2000   # optional, only if you want a timed delay
+                splash_delay_ms=2000
             )
         elif fish and not fish.alive:
             fish = None
@@ -512,12 +561,10 @@ async def main():
             if idx < len(star_imgs):
                 catch_effect = CatchEffect(fish.x, fish.y, star_imgs[idx])
             else:
-                catch_effect = None  # or wrap/reuse last star
+                catch_effect = None
             fish = None
             
-
-        bg = get_sky_color(start)
-        screen.fill(bg)
+        ui.fill_sky(start)
 
         if catch_effect:
             catch_effect.update(dt)
@@ -534,11 +581,11 @@ async def main():
 
         remaining = max(0, int(time_limit - (now-start)))
         txt = f"Fish {score}/{TARGET}   Time {remaining}s"
-        screen.blit(font.render(txt, True, (255,255,255)), (10,10))
+        screen.blit(font.render(txt, True, WHITE), (10,10))
 
         if score >= TARGET or remaining <= 0:
             msg = "Ka pai! Feast ready." if score>=TARGET else "Kua pau te wā."
-            screen.blit(font.render(msg, True, (255,255,255)), (W//2-100, H//2))
+            screen.blit(font.render(msg, True, WHITE), (W//2-100, H//2))
             pygame.display.flip()
             await asyncio.sleep(1.5)
             running = False
