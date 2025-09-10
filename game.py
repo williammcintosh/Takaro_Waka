@@ -3,13 +3,20 @@ import pygame, asyncio, math, random, time
 W, H = 1200, 680
 FPS = 60
 FISH_LIFE = 3.0
-TARGET = 7
+TARGET = 9
 ROT_SPEED = 3.0
 THRUST = 0.12
 FRICTION = 0.99
 BRAKE = 0.95
 
-
+pygame.init()
+screen = pygame.display.set_mode((W, H))
+fish_imgs = [pygame.image.load(f"images/fishy/fish__{i}.png").convert_alpha()
+                for i in range(1, 28)]
+star_imgs = [pygame.image.load(f"images/stars/matariki_star_{i}.png").convert_alpha()
+                for i in range(1, 10)]
+wake_img_big = pygame.image.load("images/waka/waka_wake_big.png").convert_alpha()
+wake_img_small = pygame.image.load("images/waka/waka_wake_small.png").convert_alpha()
 
 class Waka:
     def __init__(self, x, y, fps=8, splash_snds=None):
@@ -170,8 +177,7 @@ class Fish:
                  splash_snds=None, splash_delay_ms=None, splash_frame=12):
         self.x, self.y = float(x), float(y)
         self.expires_at = time.time() + life
-        self.frames = [pygame.image.load(f"images/fishy/fish__{i}.png").convert_alpha()
-                       for i in range(1, 28)]
+        self.frames = fish_imgs
         if scale != 1.0:
             self.frames = [
                 pygame.transform.smoothscale(
@@ -218,6 +224,72 @@ class Fish:
         screen.blit(img, rect.topleft)
 
 
+class CatchEffect:
+    def __init__(self, x, y, star, flash_ms=120, star_ms=600, steps=12):
+        self.x, self.y = int(x), int(y)
+        self.flash_ms, self.star_ms = flash_ms, star_ms
+        self.t, self.done = 0, False
+
+        # prebuild star frames once
+        w, h = star.get_width(), star.get_height()
+        self.star_frames = []
+        for i in range(steps):
+            p = (i+1)/steps
+            s = 0.6 + 0.4*math.sin(p*math.pi)
+            self.star_frames.append(
+                pygame.transform.smoothscale(star, (int(w*s), int(h*s)))
+            )
+
+    def update(self, dt):
+        self.t += dt
+        if self.t > self.flash_ms + self.star_ms:
+            self.done = True
+
+    def draw(self, screen):
+        if self.t <= self.flash_ms:
+            p = self.t / self.flash_ms
+            size = int(20 + 80*p)
+            rect = pygame.Rect(0,0,size,size); rect.center = (self.x,self.y)
+            pygame.draw.rect(screen, (255,255,255), rect, width=3)
+        else:
+            p = min(1.0, (self.t - self.flash_ms)/self.star_ms)
+            idx = min(int(p*(len(self.star_frames)-1)), len(self.star_frames)-1)
+            img = self.star_frames[idx]
+            screen.blit(img, img.get_rect(center=(self.x,self.y)))
+
+class WakeTrail:
+    def __init__(self, img, spawn_ms=60, life_ms=500, max_parts=80):
+        self.img = img
+        self.spawn_ms = spawn_ms
+        self.life_ms = life_ms
+        self.max_parts = max_parts
+        self.parts, self.last_spawn = [], 0
+
+    def spawn(self, x, y, ang):
+        now = pygame.time.get_ticks()
+        if now - self.last_spawn < self.spawn_ms: return
+        self.last_spawn = now
+        # drop a bit behind the waka nose
+        r = math.radians(ang)
+        px = x - math.cos(r)*24
+        py = y - math.sin(r)*24
+        self.parts.append({"x": px, "y": py, "ang": ang, "t": 0})
+        if len(self.parts) > self.max_parts: self.parts.pop(0)
+
+    def update(self, dt):
+        for p in self.parts: p["t"] += dt
+        self.parts = [p for p in self.parts if p["t"] < self.life_ms]
+
+    def draw(self, screen):
+        for p in self.parts:
+            a = 1 - p["t"]/self.life_ms
+            s = 0.7 + 0.2*a
+            img = pygame.transform.rotozoom(self.img, -p["ang"]-90, s)
+            img.set_alpha(int(160*a))
+            screen.blit(img, img.get_rect(center=(p["x"], p["y"])))
+
+
+
 def get_sky_color(start_time, cycle_length=60):
     now = time.time()
     elapsed = now - start_time
@@ -242,7 +314,6 @@ def get_sky_color(start_time, cycle_length=60):
 
 
 async def main():
-    pygame.init()
     pygame.mixer.init()
     pygame.mixer.set_num_channels(16)  # more heads to play on
     coin = pygame.mixer.Sound("sounds/get-coin.mp3")
@@ -258,9 +329,6 @@ async def main():
         pygame.mixer.Sound(f"sounds/net_flip__{i}.mp3")
         for i in range(1, 5)
     ]
-    for n in net_flips: n.set_volume(0.8)
-    for s in fish_splashes: s.set_volume(0.9)
-    for r in row_spalshes: r.set_volume(0.3)
     count = {
         1: pygame.mixer.Sound("sounds/tahi_ika.mp3"),
         2: pygame.mixer.Sound("sounds/rua_ika.mp3"),
@@ -270,19 +338,27 @@ async def main():
         6: pygame.mixer.Sound("sounds/ono_ika.mp3"),
         7: pygame.mixer.Sound("sounds/whitu_ika.mp3"),
     }
+    coin.set_volume(0.4)
+    for n in net_flips: n.set_volume(0.8)
+    for s in fish_splashes: s.set_volume(0.9)
+    for r in row_spalshes: r.set_volume(0.3)
+    # for c in count: c.set_volume(1.0)
 
-    screen = pygame.display.set_mode((W, H))
     clock = pygame.time.Clock()
     font = pygame.font.SysFont(None, 24)
 
-    waka = Waka(W/2, H/2, splash_snds=row_spalshes)
+    waka = Waka(W/2, H/2, splash_snds=row_spalshes) 
+    wake_big   = WakeTrail(wake_img_big,   spawn_ms=60,  life_ms=500)
+    wake_small = WakeTrail(wake_img_small, spawn_ms=140, life_ms=450)
     fish = None
     score = 0
     start = time.time()
     time_limit = 60
+    catch_effect = None
 
     running = True
     while running:
+        dt = clock.tick(FPS)
         for e in pygame.event.get():
             if e.type == pygame.QUIT:
                 running = False
@@ -308,6 +384,14 @@ async def main():
         waka.handle_input(keys)
         waka.update()
 
+        # spawn wake continuously while rowing
+        wake_small.spawn(waka.x, waka.y, waka.ang) 
+        if waka.rowing and not waka.net_active():
+            wake_big.spawn(waka.x, waka.y, waka.ang)
+
+        wake_small.update(dt)
+        wake_big.update(dt)
+
         now = time.time()
         if fish is None and random.random() < 0.02:
             fish = Fish(
@@ -330,13 +414,28 @@ async def main():
             coin.play()
             if score in count:
                 count[score].play()
+            idx = score - 1  # score 1 → index 0
+            if idx < len(star_imgs):
+                catch_effect = CatchEffect(fish.x, fish.y, star_imgs[idx])
+            else:
+                catch_effect = None  # or wrap/reuse last star
             fish = None
+            
 
         bg = get_sky_color(start)
         screen.fill(bg)
 
+        if catch_effect:
+            catch_effect.update(dt)
+            catch_effect.draw(screen)
+            if catch_effect.done:
+                catch_effect = None
+
         if fish:
             fish.draw(screen)
+
+        wake_small.draw(screen)
+        wake_big.draw(screen)
         waka.draw(screen)
 
         remaining = max(0, int(time_limit - (now-start)))
