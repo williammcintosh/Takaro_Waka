@@ -10,6 +10,10 @@ FRICTION = 0.99
 BRAKE = 0.95
 
 pygame.init()
+TITLE = "Tākaro Waka"
+SUBTITLE = "it's matariki time!"
+border_img = pygame.image.load("images/borders/maori_koru_border.png")
+border_img = pygame.transform.smoothscale(border_img, (W, H))
 screen = pygame.display.set_mode((W, H))
 fish_imgs = [pygame.image.load(f"images/fishy/fish__{i}.png").convert_alpha()
                 for i in range(1, 28)]
@@ -289,6 +293,92 @@ class WakeTrail:
             screen.blit(img, img.get_rect(center=(p["x"], p["y"])))
 
 
+def make_button(font, text):
+    surf = font.render(text, True, (20,20,20))
+    pad = 18
+    rect = surf.get_rect()
+    box = pygame.Rect(0,0,rect.w+pad*2, rect.h+pad*2)
+    return surf, rect, box
+
+def draw_button(screen, center, surf, rect, box, hovered):
+    box.center = center
+    rect.center = center
+    pygame.draw.rect(screen, (240,240,240), box, border_radius=12)
+    if hovered:
+        pygame.draw.rect(screen, (40,160,220), box, width=4, border_radius=12)
+    else:
+        pygame.draw.rect(screen, (80,80,80), box, width=3, border_radius=12)
+    screen.blit(surf, rect.topleft)
+
+async def show_menu():
+    clock = pygame.time.Clock()
+    title_font = pygame.font.SysFont(None, 96)
+    sub_font   = pygame.font.SysFont(None, 56)
+    btn_font   = pygame.font.SysFont(None, 48)
+
+    play_btn   = make_button(btn_font, "Play")
+    how_btn    = make_button(btn_font, "How to play")
+    quit_btn   = make_button(btn_font, "Quit")
+
+    while True:
+        dt = clock.tick(FPS)
+        mouse = pygame.mouse.get_pos()
+        clicked = False
+
+        for e in pygame.event.get():
+            if e.type == pygame.QUIT:
+                return "quit"
+            if e.type == pygame.KEYDOWN:
+                if e.key == pygame.K_RETURN:
+                    return "play"
+                if e.key == pygame.K_ESCAPE:
+                    return "quit"
+                if e.key == pygame.K_h:
+                    pass  # stub
+            if e.type == pygame.MOUSEBUTTONDOWN and e.button == 1:
+                clicked = True
+
+        screen.fill((10, 20, 35))
+        screen.blit(border_img, (0,0))
+        # slight overlay for readability
+        overlay = pygame.Surface((W,H), pygame.SRCALPHA)
+        overlay.fill((0,0,0,120))
+        screen.blit(overlay, (0,0))
+
+        # titles
+        t1 = title_font.render(TITLE, True, (255, 235, 120))
+        t2 = sub_font.render(SUBTITLE, True, (255,255,255))
+        screen.blit(t1, t1.get_rect(center=(W//2, H//2-160)))
+        screen.blit(t2, t2.get_rect(center=(W//2, H//2-100)))
+
+        # buttons
+        centers = [(W//2, H//2+10), (W//2, H//2+90), (W//2, H//2+170)]
+        labels = [play_btn, how_btn, quit_btn]
+        names = ["play","how","quit"]
+        choice = None
+
+        for (surf, rect, box), cname, ctr in zip(labels, names, centers):
+            hovered = pygame.Rect(0,0, box.w, box.h)
+            hovered.center = ctr
+            is_over = hovered.collidepoint(mouse)
+            draw_button(screen, ctr, surf, rect, box, is_over)
+            if is_over and clicked:
+                choice = cname
+
+        pygame.display.flip()
+        await asyncio.sleep(0)
+
+        if choice == "play":
+            return "play"
+        if choice == "quit":
+            return "quit"
+        if choice == "how":
+            # flash a tiny toast
+            toast = sub_font.render("How to play coming soon", True, (255,255,255))
+            screen.blit(toast, toast.get_rect(center=(W//2, H//2-40)))
+            pygame.display.flip()
+            await asyncio.sleep(0.8)
+
 
 def get_sky_color(start_time, cycle_length=60):
     now = time.time()
@@ -342,7 +432,11 @@ async def main():
     for n in net_flips: n.set_volume(0.8)
     for s in fish_splashes: s.set_volume(0.9)
     for r in row_spalshes: r.set_volume(0.3)
-    # for c in count: c.set_volume(1.0)
+
+    choice = await show_menu()
+    if choice == "quit":
+        pygame.quit()
+        return
 
     clock = pygame.time.Clock()
     font = pygame.font.SysFont(None, 24)
