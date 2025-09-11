@@ -1,4 +1,4 @@
-import pygame, asyncio, math, random, time
+import pygame, asyncio, math, random, time, os
 
 W, H = 1200, 680
 FPS = 60
@@ -13,35 +13,61 @@ LIGHT_BG = (245,245,245)
 MAORI_RED = (212,0,0)
 
 pygame.init()
-TITLE = "Tākaro Waka"
-SUBTITLE = "it's matariki time!"
 
 
-border_png = pygame.image.load("images/borders/maori_koru_border.png")
-screen = pygame.display.set_mode((W, H))
-fish_imgs = [pygame.image.load(f"images/fishy/fish__{i}.png").convert_alpha()
-                for i in range(1, 28)]
-star_imgs = [pygame.image.load(f"images/stars/matariki_star_{i}.png").convert_alpha()
-                for i in range(1, 10)]
-wake_img_big = pygame.image.load("images/waka/waka_wake_big.png").convert_alpha()
-wake_img_small = pygame.image.load("images/waka/waka_wake_small.png").convert_alpha()
+
+class ImagesKit:
+    def __init__(self, base="images",
+                 border_path="borders/maori_koru_border.png",
+                 fish_count=27, waka_count=7, star_count=9, net_count=3,
+                 wake_big="waka/waka_wake_big.png",
+                 wake_small="waka/waka_wake_small.png"):
+        self.base = base
+        self._scale_cache = {}  # (id(surface), round(scale,3)) -> scaled surface
+
+        def _load(rel, alpha=True):
+            surf = pygame.image.load(os.path.join(self.base, rel))
+            return surf.convert_alpha() if alpha else surf.convert()
+
+        # load once
+        self.border       = _load(border_path, True)
+        self.fish_frames  = [_load(f"fishy/fish__{i}.png", True) for i in range(1, fish_count+1)]
+        self.waka_frames  = [_load(f"waka/waka__{i}.png", True)  for i in range(1, waka_count+1)]
+        self.net_frames   = [_load(f"waka/wakanet__{i}.png", True) for i in range(1, net_count+1)]
+        self.stars        = [_load(f"stars/matariki_star_{i}.png", True) for i in range(1, star_count+1)]
+        self.wake_big     = _load(wake_big, True)
+        self.wake_small   = _load(wake_small, True)
+
+    def star_for_score(self, score):
+        idx = max(0, min(score-1, len(self.stars)-1))
+        return self.stars[idx]
+
+    def scaled(self, surf, scale):
+        k = (id(surf), round(scale,3))
+        if k in self._scale_cache:
+            return self._scale_cache[k]
+        w, h = surf.get_width(), surf.get_height()
+        out = pygame.transform.smoothscale(surf, (int(w*scale), int(h*scale)))
+        self._scale_cache[k] = out
+        return out
+
+    def scale_list(self, frames, scale):
+        return [self.scaled(f, scale) for f in frames]
+
 
 class Waka:
-    def __init__(self, x, y, fps=8, splash_snds=None):
+    def __init__(self, x, y, fps=8, splash_snds=None, frames=None, net_frames=None):
+        assert frames and net_frames, "Pass frames from ImagesKit"
         self.x, self.y = x, y
         self.ang = -90
         self.vx, self.vy = 0.0, 0.0
-        self.net_flash_t = 0
-        self.frames = [pygame.image.load(f"images/waka/waka__{i}.png").convert_alpha() for i in range(1, 8)]
+        self.frames = frames
+        self.net_frames = net_frames
         self.frame_idx = 0
         self.frame_ms = int(1000 / fps)
         self.last_frame_tick = pygame.time.get_ticks()
         self.rowing = False
-        self.net_frames = [
-            pygame.image.load("images/waka/wakanet__1.png").convert_alpha(),
-            pygame.image.load("images/waka/wakanet__2.png").convert_alpha(),
-            pygame.image.load("images/waka/wakanet__3.png").convert_alpha(),
-        ]
+        self.net_frames = net_frames
         self.last_boost_t = 0
         self.boost_ms = 140
         self.BOOST = THRUST * 10  # tweak to taste
@@ -181,23 +207,18 @@ class Waka:
 
 
 class Fish:
-    def __init__(self, x, y, life=FISH_LIFE, fps=10, scale=1.0,
+    def __init__(self, x, y, base_frames, life=FISH_LIFE, fps=10, scale=1.0,
                  splash_snds=None, splash_delay_ms=None, splash_frame=12):
         self.x, self.y = float(x), float(y)
         self.expires_at = time.time() + life
-        self.frames = fish_imgs
-        if scale != 1.0:
-            self.frames = [
-                pygame.transform.smoothscale(
-                    f, (int(f.get_width()*scale), int(f.get_height()*scale))
-                ) for f in self.frames
-            ]
+        self.frames = base_frames if scale==1.0 else [
+            pygame.transform.smoothscale(f, (int(f.get_width()*scale), int(f.get_height()*scale)))
+            for f in base_frames
+        ]
         self.frame_idx = 0
         self.frame_ms = int(1000 / fps)
         self.last_frame_tick = pygame.time.get_ticks()
-
-        # sounds
-        self.splash_snds = splash_snds or []  # safe default
+        self.splash_snds = splash_snds or []
         self.spawn_tick = pygame.time.get_ticks()
         self.splash_delay_ms = splash_delay_ms
         self.splash_frame = splash_frame
@@ -233,20 +254,27 @@ class Fish:
 
 
 class CatchEffect:
-    def __init__(self, x, y, star, flash_ms=120, star_ms=600, steps=12):
+    _cache = {}  # {(id(surface), steps, w,h): [scaled_surfaces...]}
+
+    def __init__(self, x, y, star_img, flash_ms=120, star_ms=600, steps=12):
         self.x, self.y = int(x), int(y)
         self.flash_ms, self.star_ms = flash_ms, star_ms
         self.t, self.done = 0, False
+        self.frames = self._get_frames(star_img, steps)
 
-        # prebuild star frames once
+    @classmethod
+    def _get_frames(cls, star, steps):
         w, h = star.get_width(), star.get_height()
-        self.star_frames = []
+        key = (id(star), steps, w, h)
+        if key in cls._cache:
+            return cls._cache[key]
+        out = []
         for i in range(steps):
             p = (i+1)/steps
             s = 0.6 + 0.4*math.sin(p*math.pi)
-            self.star_frames.append(
-                pygame.transform.smoothscale(star, (int(w*s), int(h*s)))
-            )
+            out.append(pygame.transform.smoothscale(star, (int(w*s), int(h*s))))
+        cls._cache[key] = out
+        return out
 
     def update(self, dt):
         self.t += dt
@@ -259,11 +287,19 @@ class CatchEffect:
             size = int(20 + 80*p)
             rect = pygame.Rect(0,0,size,size); rect.center = (self.x,self.y)
             pygame.draw.rect(screen, (255,255,255), rect, width=3)
-        else:
-            p = min(1.0, (self.t - self.flash_ms)/self.star_ms)
-            idx = min(int(p*(len(self.star_frames)-1)), len(self.star_frames)-1)
-            img = self.star_frames[idx]
-            screen.blit(img, img.get_rect(center=(self.x,self.y)))
+            return
+
+        p = min(1.0, (self.t - self.flash_ms)/self.star_ms)
+        idx = min(int(p*(len(self.frames)-1)), len(self.frames)-1)
+        img = self.frames[idx]
+
+        # soft fade out
+        alpha = int(255*(1.0 - p))
+        prev_alpha = img.get_alpha()
+        img.set_alpha(alpha)
+        screen.blit(img, img.get_rect(center=(self.x,self.y)))
+        img.set_alpha(prev_alpha)
+
 
 class WakeTrail:
     def __init__(self, img, spawn_ms=60, life_ms=500, max_parts=80):
@@ -298,9 +334,9 @@ class WakeTrail:
 
 class UiKit:
     def __init__(self, screen, border_surface,
-                 button_fill=(212,0,0), text_color=(255,255,255),
+                 button_fill=(212,0,0), text_color=WHITE,
                  outline_idle=(30,30,30), radius=14,
-                 bg_color=(245,245,245), font_name=None, font_sizes=None):
+                 bg_color=LIGHT_BG, font_name=None, font_sizes=None):
         self.screen = screen
         self.border_src = border_surface.convert_alpha()
         self.button_fill = button_fill
@@ -308,6 +344,8 @@ class UiKit:
         self.outline_idle = outline_idle
         self.radius = radius
         self.bg_color = bg_color
+        self.title = "Tākaro Waka"
+        self.subtitle = "it's matariki time!"
         self._border_cache = {}
 
         # fonts
@@ -351,16 +389,14 @@ class UiKit:
         box.center = center
         rect.center = center
         pygame.draw.rect(self.screen, self.button_fill, box, border_radius=self.radius)
-        pygame.draw.rect(self.screen, (255,255,255) if hovered else self.outline_idle,
+        pygame.draw.rect(self.screen, WHITE if hovered else self.outline_idle,
                          box, width=4, border_radius=self.radius)
         self.screen.blit(surf, rect.topleft)
 
-    async def show_menu(self, title, subtitle, items, border_scale=0.9, overlay_alpha=120, fps=60):
-        """
-        items is list of (label, value). Returns chosen value: e.g. "play" | "how" | "quit"
-        """
+    async def show_menu(self, border_scale=0.9, overlay_alpha=120, fps=60):
         clock = pygame.time.Clock()
-        # build buttons once
+        # build buttons
+        items = [("Play","play"), ("How to play","how"), ("Quit","quit")]
         btns = [self._make_button(lbl) for (lbl, _) in items]
 
         while True:
@@ -397,8 +433,8 @@ class UiKit:
 
             # titles
             cx, cy = self.screen.get_width()//2, self.screen.get_height()//2
-            self.render_center("title", title, (255,235,120), (cx, cy-160))
-            self.render_center("subtitle", subtitle, (255,255,255), (cx, cy-100))
+            self.render_center("title", self.title, (255,235,120), (cx, cy-160))
+            self.render_center("subtitle", self.subtitle, WHITE, (cx, cy-100))
 
             # buttons
             spacing = 80
@@ -445,44 +481,93 @@ class UiKit:
     def fill_sky(self, start_time, cycle_length=60, stops=None):
         self.screen.fill(self.sky_color(start_time, cycle_length, stops))
 
+class SoundKit:
+    def __init__(self, base="sounds", volumes=None, num_channels=16):
+        if not pygame.mixer.get_init():
+            pygame.mixer.init()
+        pygame.mixer.set_num_channels(num_channels)
 
+        self.base = base
+        self.coin = self._load("get-coin.mp3")
+        self.row_splashes = self._load_seq("row_splash__{}.mp3", 1, 7)
+        self.fish_splashes = self._load_seq("fish_splash__{}.mp3", 1, 6)
+        self.net_flips = self._load_seq("net_flip__{}.mp3", 1, 4)
+        self.count = {i:self._load(n) for i,n in enumerate(
+            ["tahi_ika.mp3","rua_ika.mp3","toru_ika.mp3","wha_ika.mp3",
+             "rima_ika.mp3","ono_ika.mp3","whitu_ika.mp3","waru_ika.mp3",
+             "iwa_ika.mp3"], start=1)}
+
+        self.vols = {"coin":0.2,"row":0.1,"fish":0.5,"net":0.8,"count":0.9}
+        if volumes: self.vols.update(volumes)
+
+        if self.coin: self.coin.set_volume(self.vols["coin"])
+        for s in self.row_splashes: s.set_volume(self.vols["row"])
+        for s in self.fish_splashes: s.set_volume(self.vols["fish"])
+        for s in self.net_flips: s.set_volume(self.vols["net"])
+        for s in self.count.values():
+            if s: s.set_volume(self.vols["count"])
+
+    # set all count vols later
+    def set_count_volume(self, vol):
+        self.vols["count"] = vol
+        for s in self.count.values():
+            if s: s.set_volume(vol)
+
+    # one-off play with custom vol (uses a channel)
+    def say_count(self, n, vol=None):
+        s = self.count.get(n)
+        if not s: return
+        if vol is None:
+            s.play()
+        else:
+            ch = pygame.mixer.find_channel()
+            if ch: ch.set_volume(vol); ch.play(s)
+            else:  s.set_volume(vol); s.play()
+
+
+    def _load(self, rel):
+        try:
+            return pygame.mixer.Sound(os.path.join(self.base, rel))
+        except Exception as e:
+            print("Failed to load sound:", rel, e)
+            return None
+
+    def _load_seq(self, pattern, start, end_inclusive):
+        out = []
+        for i in range(start, end_inclusive+1):
+            s = self._load(pattern.format(i))
+            if s: out.append(s)
+        return out
+
+    # helpers
+    def play_coin(self):
+        if self.coin: self.coin.play()
+
+    def random_row(self):
+        return random.choice(self.row_splashes) if self.row_splashes else None
+
+    def random_fish(self):
+        return random.choice(self.fish_splashes) if self.fish_splashes else None
+
+    def random_net(self):
+        return random.choice(self.net_flips) if self.net_flips else None
+
+    def say_count(self, n):
+        s = self.count.get(n)
+        if s: s.play()
 
 
 
 
 async def main():
     pygame.mixer.init()
-    pygame.mixer.set_num_channels(16)  # more heads to play on
-    ui = UiKit(screen, border_png, button_fill=MAORI_RED, text_color=WHITE, bg_color=LIGHT_BG)
+    snd = SoundKit()
+    screen = pygame.display.set_mode((W, H))
+    ik = ImagesKit()
+    ui = UiKit(screen, ik.border, button_fill=MAORI_RED, text_color=WHITE, bg_color=LIGHT_BG)
 
-    coin = pygame.mixer.Sound("sounds/get-coin.mp3")
-    # in main() when you load sounds
-    row_spalshes = [
-        pygame.mixer.Sound(f"sounds/row_splash__{i}.mp3") for i in range(1, 8)
-    ]
-    fish_splashes = [
-        pygame.mixer.Sound(f"sounds/fish_splash__{i}.mp3")
-        for i in range(1, 7)
-    ]
-    net_flips = [
-        pygame.mixer.Sound(f"sounds/net_flip__{i}.mp3")
-        for i in range(1, 5)
-    ]
-    count = {
-        1: pygame.mixer.Sound("sounds/tahi_ika.mp3"),
-        2: pygame.mixer.Sound("sounds/rua_ika.mp3"),
-        3: pygame.mixer.Sound("sounds/toru_ika.mp3"),
-        4: pygame.mixer.Sound("sounds/wha_ika.mp3"),
-        5: pygame.mixer.Sound("sounds/rima_ika.mp3"),
-        6: pygame.mixer.Sound("sounds/ono_ika.mp3"),
-        7: pygame.mixer.Sound("sounds/whitu_ika.mp3"),
-    }
-    coin.set_volume(0.4)
-    for n in net_flips: n.set_volume(0.8)
-    for s in fish_splashes: s.set_volume(0.9)
-    for r in row_spalshes: r.set_volume(0.3)
-
-    choice = await ui.show_menu(TITLE, SUBTITLE, [("Play","play"), ("How to play","how"), ("Quit","quit")])
+    # Main menu
+    choice = await ui.show_menu()
     if choice == "quit":
         pygame.quit()
         return
@@ -490,9 +575,16 @@ async def main():
     clock = pygame.time.Clock()
     font = pygame.font.SysFont(None, 24)
 
-    waka = Waka(W/2, H/2, splash_snds=row_spalshes) 
-    wake_big   = WakeTrail(wake_img_big,   spawn_ms=60,  life_ms=500)
-    wake_small = WakeTrail(wake_img_small, spawn_ms=140, life_ms=450)
+    wake_big, wake_small = ik.wake_big, ik.wake_small
+
+    waka = Waka(
+        W/2, H/2,
+        splash_snds=snd.row_splashes,
+        frames=ik.waka_frames,
+        net_frames=ik.net_frames
+    )
+    wake_big   = WakeTrail(wake_big,   spawn_ms=60,  life_ms=500)
+    wake_small = WakeTrail(wake_small, spawn_ms=140, life_ms=450)
     fish = None
     score = 0
     start = time.time()
@@ -515,11 +607,13 @@ async def main():
 
             # nets control
             elif e.type == pygame.KEYDOWN and e.key == pygame.K_SPACE:
-                random.choice(net_flips).play()
+                s = snd.random_net()
+                if s: s.play()
                 if waka.net_state in ("idle", "retracting"):
                     waka.net_state = "extending"
             elif e.type == pygame.KEYUP and e.key == pygame.K_SPACE:
-                random.choice(net_flips).play()
+                s = snd.random_net()
+                if s: s.play()
                 if waka.net_state in ("extending", "held"):
                     waka.net_state = "retracting"
 
@@ -538,12 +632,13 @@ async def main():
         now = time.time()
         if fish is None and random.random() < 0.02:
             fish = Fish(
-                random.randint(40, W-40),
-                random.randint(40, H-40),
+                random.randint(40,W-40),
+                random.randint(40,H-40),
+                base_frames=ik.fish_frames,
                 life=FISH_LIFE,
                 fps=8,
                 scale=0.9,
-                splash_snds=fish_splashes,
+                splash_snds=snd.fish_splashes,
                 splash_delay_ms=2000
             )
         elif fish and not fish.alive:
@@ -554,14 +649,10 @@ async def main():
 
         if fish and waka.try_catch(fish):
             score += 1
-            coin.play()
-            if score in count:
-                count[score].play()
-            idx = score - 1  # score 1 → index 0
-            if idx < len(star_imgs):
-                catch_effect = CatchEffect(fish.x, fish.y, star_imgs[idx])
-            else:
-                catch_effect = None
+            snd.play_coin()
+            snd.say_count(score)
+            star_img = ik.star_for_score(score)
+            catch_effect = CatchEffect(fish.x, fish.y, star_img)    
             fish = None
             
         ui.fill_sky(start)
