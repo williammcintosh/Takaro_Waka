@@ -2,15 +2,21 @@ import pygame, asyncio, math, random, time, os
 
 W, H = 1200, 680
 FPS = 60
+TIME_LIMIT = 60
 FISH_LIFE = 3.0
+FISH_UPPERBOUND = 40
+FISH_LOWERBOUND = 80
 TARGET = 9
 ROT_SPEED = 3.0
 THRUST = 0.12
 FRICTION = 0.99
-BRAKE = 0.95
-WHITE = (255,255,255)
-LIGHT_BG = (245,245,245)
+BRAKE = 0.75
+ROW_WAKE_DELAY_MS = 120
+BRT_WHITE = (255,255,255)
+OFF_WHITE = (245,245,245)
 MAORI_RED = (212,0,0)
+DARK_GRAY = (30,30,30)
+EGG_SHELL = (255,235,120)
 
 pygame.init()
 
@@ -19,9 +25,11 @@ pygame.init()
 class ImagesKit:
     def __init__(self, base="images",
                  border_path="borders/maori_koru_border.png",
-                 fish_count=27, waka_count=7, star_count=9, net_count=3,
+                 fish_frame_count=27, waka_frame_count=7, star_count=9, net_frame_count=3,
                  wake_big="waka/waka_wake_big.png",
-                 wake_small="waka/waka_wake_small.png"):
+                 wake_small="waka/waka_wake_small.png",
+                 rowing_wake="waka/rowing_wake.png"
+                 ):
         self.base = base
         self._scale_cache = {}  # (id(surface), round(scale,3)) -> scaled surface
 
@@ -31,12 +39,13 @@ class ImagesKit:
 
         # load once
         self.border       = _load(border_path, True)
-        self.fish_frames  = [_load(f"fishy/fish__{i}.png", True) for i in range(1, fish_count+1)]
-        self.waka_frames  = [_load(f"waka/waka__{i}.png", True)  for i in range(1, waka_count+1)]
-        self.net_frames   = [_load(f"waka/wakanet__{i}.png", True) for i in range(1, net_count+1)]
+        self.fish_frames  = [_load(f"fishy/fish__{i}.png", True) for i in range(1, fish_frame_count+1)]
+        self.waka_frames  = [_load(f"waka/waka__{i}.png", True)  for i in range(1, waka_frame_count+1)]
+        self.net_frames   = [_load(f"waka/wakanet__{i}.png", True) for i in range(1, net_frame_count+1)]
         self.stars        = [_load(f"stars/matariki_star_{i}.png", True) for i in range(1, star_count+1)]
         self.wake_big     = _load(wake_big, True)
         self.wake_small   = _load(wake_small, True)
+        self.rowing_wake  = _load(rowing_wake, True)
 
     def star_for_score(self, score):
         idx = max(0, min(score-1, len(self.stars)-1))
@@ -207,8 +216,12 @@ class Waka:
 
 
 class Fish:
-    def __init__(self, x, y, base_frames, life=FISH_LIFE, fps=10, scale=1.0,
-                 splash_snds=None, splash_delay_ms=None, splash_frame=12):
+    def __init__(self, x, y,
+                 base_frames,
+                 splash_snds=None,
+                 life=FISH_LIFE,
+                 fps=10, scale=1.0,
+                 splash_delay_ms=None, splash_frame=12):
         self.x, self.y = float(x), float(y)
         self.expires_at = time.time() + life
         self.frames = base_frames if scale==1.0 else [
@@ -302,11 +315,12 @@ class CatchEffect:
 
 
 class WakeTrail:
-    def __init__(self, img, spawn_ms=60, life_ms=500, max_parts=80):
+    def __init__(self, img, spawn_ms=60, life_ms=500, max_parts=80, back_offset=100):
         self.img = img
         self.spawn_ms = spawn_ms
         self.life_ms = life_ms
         self.max_parts = max_parts
+        self.back_offset = back_offset
         self.parts, self.last_spawn = [], 0
 
     def spawn(self, x, y, ang):
@@ -315,8 +329,8 @@ class WakeTrail:
         self.last_spawn = now
         # drop a bit behind the waka nose
         r = math.radians(ang)
-        px = x - math.cos(r)*100
-        py = y - math.sin(r)*100
+        px = x - math.cos(r)*self.back_offset
+        py = y - math.sin(r)*self.back_offset
         self.parts.append({"x": px, "y": py, "ang": ang, "t": 0})
         if len(self.parts) > self.max_parts: self.parts.pop(0)
 
@@ -334,15 +348,15 @@ class WakeTrail:
 
 class UiKit:
     def __init__(self, screen, border_surface,
-                 button_fill=(212,0,0), text_color=WHITE,
-                 outline_idle=(30,30,30), radius=14,
-                 bg_color=LIGHT_BG, font_name=None, font_sizes=None):
+                 button_fill=MAORI_RED, text_color=BRT_WHITE,
+                 outline_idle=DARK_GRAY, corner_radius=14,
+                 bg_color=OFF_WHITE, font_name=None, font_sizes=None):
         self.screen = screen
         self.border_src = border_surface.convert_alpha()
         self.button_fill = button_fill
         self.text_color = text_color
         self.outline_idle = outline_idle
-        self.radius = radius
+        self.radius = corner_radius
         self.bg_color = bg_color
         self.title = "Tākaro Waka"
         self.subtitle = "it's matariki time!"
@@ -389,7 +403,7 @@ class UiKit:
         box.center = center
         rect.center = center
         pygame.draw.rect(self.screen, self.button_fill, box, border_radius=self.radius)
-        pygame.draw.rect(self.screen, WHITE if hovered else self.outline_idle,
+        pygame.draw.rect(self.screen, BRT_WHITE if hovered else self.outline_idle,
                          box, width=4, border_radius=self.radius)
         self.screen.blit(surf, rect.topleft)
 
@@ -433,8 +447,8 @@ class UiKit:
 
             # titles
             cx, cy = self.screen.get_width()//2, self.screen.get_height()//2
-            self.render_center("title", self.title, (255,235,120), (cx, cy-160))
-            self.render_center("subtitle", self.subtitle, WHITE, (cx, cy-100))
+            self.render_center("title", self.title, EGG_SHELL, (cx, cy-160))
+            self.render_center("subtitle", self.subtitle, BRT_WHITE, (cx, cy-100))
 
             # buttons
             spacing = 80
@@ -461,7 +475,7 @@ class UiKit:
             stops = [
                 (0.00, (135,206,250)),  # morning
                 (0.25, (0,191,255)),    # day
-                (0.50, (255,127,80)),   # sunset
+                (0.50, (255,204,153)),  # sunset
                 (1.00, (0,0,20)),       # night
             ]
         elapsed = time.time() - start_time
@@ -561,10 +575,10 @@ class SoundKit:
 
 async def main():
     pygame.mixer.init()
-    snd = SoundKit()
     screen = pygame.display.set_mode((W, H))
+    snd = SoundKit()
     ik = ImagesKit()
-    ui = UiKit(screen, ik.border, button_fill=MAORI_RED, text_color=WHITE, bg_color=LIGHT_BG)
+    ui = UiKit(screen, ik.border)
 
     # Main menu
     choice = await ui.show_menu()
@@ -575,21 +589,23 @@ async def main():
     clock = pygame.time.Clock()
     font = pygame.font.SysFont(None, 24)
 
-    wake_big, wake_small = ik.wake_big, ik.wake_small
-
     waka = Waka(
         W/2, H/2,
         splash_snds=snd.row_splashes,
         frames=ik.waka_frames,
         net_frames=ik.net_frames
     )
-    wake_big   = WakeTrail(wake_big,   spawn_ms=60,  life_ms=500)
-    wake_small = WakeTrail(wake_small, spawn_ms=140, life_ms=450)
+    # wake_big   = WakeTrail(ik.wake_big)
+    # wake_small = WakeTrail(ik.wake_small)
+    # row_wake   = WakeTrail(ik.rowing_wake)
+    wake_big   = WakeTrail(ik.wake_big,   spawn_ms=60, life_ms=500, max_parts=80, back_offset=120)
+    wake_small = WakeTrail(ik.wake_small, spawn_ms=60, life_ms=500, max_parts=80, back_offset=100)
+    row_wake   = WakeTrail(ik.rowing_wake,spawn_ms=60,  life_ms=750, max_parts=30, back_offset=1) 
     fish = None
     score = 0
     start = time.time()
-    time_limit = 60
     catch_effect = None
+    row_wake_due = None
 
     running = True
     while running:
@@ -602,6 +618,7 @@ async def main():
                     waka.stroking = True
                     waka._play_splash()
                     waka.stroke_start = pygame.time.get_ticks()
+                    row_wake_due = pygame.time.get_ticks() + ROW_WAKE_DELAY_MS
             elif e.type == pygame.KEYUP and e.key == pygame.K_UP:
                 waka.stroking = False
 
@@ -621,6 +638,11 @@ async def main():
         waka.handle_input(keys)
         waka.update()
 
+        # schedule the single rowing wake once per initial press
+        if row_wake_due and pygame.time.get_ticks() >= row_wake_due:  # NEW
+            row_wake.spawn(waka.x, waka.y, waka.ang)
+            row_wake_due = None
+
         # spawn wake continuously while rowing
         wake_small.spawn(waka.x, waka.y, waka.ang) 
         if waka.rowing and not waka.net_active():
@@ -628,18 +650,15 @@ async def main():
 
         wake_small.update(dt)
         wake_big.update(dt)
+        row_wake.update(dt)
 
         now = time.time()
         if fish is None and random.random() < 0.02:
             fish = Fish(
-                random.randint(40,W-40),
-                random.randint(40,H-40),
+                random.randint(FISH_UPPERBOUND,W-FISH_UPPERBOUND),
+                random.randint(FISH_LOWERBOUND,H-FISH_UPPERBOUND),
                 base_frames=ik.fish_frames,
-                life=FISH_LIFE,
-                fps=8,
-                scale=0.9,
                 splash_snds=snd.fish_splashes,
-                splash_delay_ms=2000
             )
         elif fish and not fish.alive:
             fish = None
@@ -669,14 +688,15 @@ async def main():
         wake_small.draw(screen)
         wake_big.draw(screen)
         waka.draw(screen)
+        row_wake.draw(screen) 
 
-        remaining = max(0, int(time_limit - (now-start)))
+        remaining = max(0, int(TIME_LIMIT - (now-start)))
         txt = f"Fish {score}/{TARGET}   Time {remaining}s"
-        screen.blit(font.render(txt, True, WHITE), (10,10))
+        screen.blit(font.render(txt, True, BRT_WHITE), (10,10))
 
         if score >= TARGET or remaining <= 0:
             msg = "Ka pai! Feast ready." if score>=TARGET else "Kua pau te wā."
-            screen.blit(font.render(msg, True, WHITE), (W//2-100, H//2))
+            screen.blit(font.render(msg, True, BRT_WHITE), (W//2-100, H//2))
             pygame.display.flip()
             await asyncio.sleep(1.5)
             running = False
