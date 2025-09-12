@@ -2,15 +2,15 @@ import pygame, asyncio, math, random, time, os
 
 W, H = 1200, 680
 FPS = 60
-TIME_LIMIT = 60
-FISH_LIFE = 3.0
+TIME_LIMIT = 120
+FISH_LIFE = 4.0
 FISH_UPPERBOUND = 40
-FISH_LOWERBOUND = 80
+FISH_LOWERBOUND = 160
 TARGET = 9
 ROT_SPEED = 3.0
 THRUST = 0.12
 FRICTION = 0.99
-BRAKE = 0.75
+BRAKE = 0.95
 ROW_WAKE_DELAY_MS = 120
 BRT_WHITE = (255,255,255)
 OFF_WHITE = (245,245,245)
@@ -216,49 +216,43 @@ class Waka:
 
 
 class Fish:
-    def __init__(self, x, y,
-                 base_frames,
-                 splash_snds=None,
-                 life=FISH_LIFE,
-                 fps=10, scale=1.0,
-                 splash_delay_ms=None, splash_frame=12):
+    def __init__(self, x, y, base_frames, splash_snds=None,
+                 life=FISH_LIFE, scale=1.0):
         self.x, self.y = float(x), float(y)
-        self.expires_at = time.time() + life
+        self.life = float(life)
+        self.birth = time.time()
+        self.expires_at = self.birth + self.life
+        self.x, self.y = float(x), float(y)
+        self.life = float(life)
+        self.birth = time.time()
+        self.expires_at = self.birth + self.life
         self.frames = base_frames if scale==1.0 else [
             pygame.transform.smoothscale(f, (int(f.get_width()*scale), int(f.get_height()*scale)))
             for f in base_frames
         ]
+        self.n_frames = len(self.frames)
         self.frame_idx = 0
-        self.frame_ms = int(1000 / fps)
-        self.last_frame_tick = pygame.time.get_ticks()
         self.splash_snds = splash_snds or []
         self.spawn_tick = pygame.time.get_ticks()
-        self.splash_delay_ms = splash_delay_ms
-        self.splash_frame = splash_frame
         self.splash_played = False
+        self.splash_delay_ms = self.splash_delay_ms = int(500 * self.life + 500)
 
     @property
     def alive(self):
         return time.time() < self.expires_at
 
     def update(self):
-        now = pygame.time.get_ticks()
-        if now - self.last_frame_tick >= self.frame_ms:
-            self.frame_idx = (self.frame_idx + 1) % len(self.frames)
-            self.last_frame_tick = now
-        self._maybe_play_splash(now)
+        now_s = time.time()
+        p = max(0.0, min(1.0, (now_s - self.birth) / self.life))
+        self.frame_idx = min(int(p * self.n_frames), self.n_frames - 1)
+        self._maybe_play_splash(pygame.time.get_ticks())
 
-    def _maybe_play_splash(self, now):
+    def _maybe_play_splash(self, now_ms):
         if self.splash_played or not self.alive or not self.splash_snds:
             return
-        if self.splash_delay_ms is not None:
-            if now - self.spawn_tick >= self.splash_delay_ms:
-                random.choice(self.splash_snds).play()
-                self.splash_played = True
-        else:
-            if self.frame_idx >= self.splash_frame:
-                random.choice(self.splash_snds).play()
-                self.splash_played = True
+        if now_ms - self.spawn_tick >= self.splash_delay_ms:
+            random.choice(self.splash_snds).play()
+            self.splash_played = True
 
     def draw(self, screen):
         img = self.frames[self.frame_idx]
@@ -299,7 +293,7 @@ class CatchEffect:
             p = self.t / self.flash_ms
             size = int(20 + 80*p)
             rect = pygame.Rect(0,0,size,size); rect.center = (self.x,self.y)
-            pygame.draw.rect(screen, (255,255,255), rect, width=3)
+            pygame.draw.rect(screen, BRT_WHITE, rect, width=3)
             return
 
         p = min(1.0, (self.t - self.flash_ms)/self.star_ms)
@@ -315,12 +309,15 @@ class CatchEffect:
 
 
 class WakeTrail:
-    def __init__(self, img, spawn_ms=60, life_ms=500, max_parts=80, back_offset=100):
+    def __init__(self, img, spawn_ms=60, life_ms=500, max_parts=80, back_offset=100,
+                 start_scale=0.75, end_scale=1.15):
         self.img = img
         self.spawn_ms = spawn_ms
         self.life_ms = life_ms
         self.max_parts = max_parts
         self.back_offset = back_offset
+        self.start_scale = start_scale
+        self.end_scale = end_scale
         self.parts, self.last_spawn = [], 0
 
     def spawn(self, x, y, ang):
@@ -340,10 +337,13 @@ class WakeTrail:
 
     def draw(self, screen):
         for p in self.parts:
-            a = 1 - p["t"]/self.life_ms
-            s = 0.7 + 0.2*a
+            # wakes grow over time
+            prog = max(0.0, min(1.0, p["t"] / self.life_ms))
+            s = self.start_scale + (self.end_scale - self.start_scale) * prog
+            alpha = int(160 * (1.0 - prog))
+            # Fade out
             img = pygame.transform.rotozoom(self.img, -p["ang"]-90, s)
-            img.set_alpha(int(160*a))
+            img.set_alpha(alpha)
             screen.blit(img, img.get_rect(center=(p["x"], p["y"])))
 
 class UiKit:
@@ -467,7 +467,7 @@ class UiKit:
             if choice:
                 return choice
     
-    def sky_color(self, start_time, cycle_length=60, stops=None):
+    def sky_color(self, start_time, cycle_length=TIME_LIMIT, stops=None):
         """
         Returns an (r,g,b) based on elapsed time across color stops.
         """
@@ -492,7 +492,7 @@ class UiKit:
                 )
         return stops[-1][1]
 
-    def fill_sky(self, start_time, cycle_length=60, stops=None):
+    def fill_sky(self, start_time, cycle_length=TIME_LIMIT, stops=None):
         self.screen.fill(self.sky_color(start_time, cycle_length, stops))
 
 class SoundKit:
@@ -595,12 +595,11 @@ async def main():
         frames=ik.waka_frames,
         net_frames=ik.net_frames
     )
-    # wake_big   = WakeTrail(ik.wake_big)
-    # wake_small = WakeTrail(ik.wake_small)
-    # row_wake   = WakeTrail(ik.rowing_wake)
-    wake_big   = WakeTrail(ik.wake_big,   spawn_ms=60, life_ms=500, max_parts=80, back_offset=120)
-    wake_small = WakeTrail(ik.wake_small, spawn_ms=60, life_ms=500, max_parts=80, back_offset=100)
-    row_wake   = WakeTrail(ik.rowing_wake,spawn_ms=60,  life_ms=750, max_parts=30, back_offset=1) 
+    
+    wake_small = WakeTrail(ik.wake_small, start_scale=0.7, end_scale=1.2)
+    wake_big   = WakeTrail(ik.wake_big,   start_scale=0.8, end_scale=1.25)
+    row_wake   = WakeTrail(ik.rowing_wake,start_scale=0.9, end_scale=1.3, back_offset=0, life_ms=1000)
+ 
     fish = None
     score = 0
     start = time.time()
@@ -685,10 +684,11 @@ async def main():
         if fish:
             fish.draw(screen)
 
+        # Draw images in order from bottom to top most
+        row_wake.draw(screen) 
         wake_small.draw(screen)
         wake_big.draw(screen)
         waka.draw(screen)
-        row_wake.draw(screen) 
 
         remaining = max(0, int(TIME_LIMIT - (now-start)))
         txt = f"Fish {score}/{TARGET}   Time {remaining}s"
