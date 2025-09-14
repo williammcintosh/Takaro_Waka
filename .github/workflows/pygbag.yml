@@ -1,28 +1,52 @@
 name: Build and Deploy (pygbag)
+
 on:
-  push: { branches: [main] }
+  push:
+    branches: [main]
   workflow_dispatch:
 
-permissions: { contents: write }
+permissions:
+  contents: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
-      - uses: actions/setup-python@v5
-        with: { python-version: '3.11' }
-      - run: python -V; pip -V
-      - run: pip install --upgrade pygbag pygame-ce # pygbag targets pygame-ce :contentReference[oaicite:0]{index=0}
-      # optional if you keep requirements.txt
-      - run: if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-      - run: python -m pygbag --out build/web . # needs main.py at repo root and async-aware loop :contentReference[oaicite:1]{index=1}
-      - run: ls -lah build || true
-      - run: test -d build/web || (echo "no build/web output" && exit 1)
-      - run: touch build/web/.nojekyll
-      - uses: peaceiris/actions-gh-pages@v3
         with:
-          publish_branch: gh-pages
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Show Python versions
+        run: python -V; pip -V
+
+      - name: Install build tools
+        run: pip install --upgrade pygbag pygame-ce
+
+      - name: Optional project requirements
+        run: |
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
+
+      - name: Build web bundle
+        run: python -m pygbag --build .
+
+      - name: Inspect build folder
+        run: ls -lah build || true
+
+      - name: Verify output exists
+        run: test -d build/web || (echo "no build output" && exit 1)
+
+      - name: Add nojekyll
+        run: touch build/web/.nojekyll
+
+      - name: Deploy to gh-pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
           publish_dir: build/web
