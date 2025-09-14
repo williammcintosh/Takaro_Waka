@@ -1,17 +1,18 @@
-import pygame, asyncio, math, random, time, os
+import pygame, asyncio, math, random, time, os, sys
 
 W, H = 1200, 680
 FPS = 60
-TIME_LIMIT = 120
+TIME_LIMIT = 300
 FISH_LIFE = 4.0
-FISH_UPPERBOUND = 40
-FISH_LOWERBOUND = 160
+FISH_UPPERBOUND = 40   
+FISH_LOWERBOUND = 160   # Lower bound of fish spawning loc
 TARGET = 9
 ROT_SPEED = 3.0
-THRUST = 0.12
 FRICTION = 0.99
 BRAKE = 0.95
 ROW_WAKE_DELAY_MS = 120
+PRE_END_DELAY_MS = 600   # wait before showing end screen
+END_DELAY_MS = 800       # wait on end screen before buttons
 BRT_WHITE = (255,255,255)
 OFF_WHITE = (245,245,245)
 MAORI_RED = (212,0,0)
@@ -28,8 +29,7 @@ class ImagesKit:
                  fish_frame_count=27, waka_frame_count=7, star_count=9, net_frame_count=3,
                  wake_big="waka/waka_wake_big.png",
                  wake_small="waka/waka_wake_small.png",
-                 rowing_wake="waka/rowing_wake.png"
-                 ):
+                 rowing_wake="waka/rowing_wake.png"):
         self.base = base
         self._scale_cache = {}  # (id(surface), round(scale,3)) -> scaled surface
 
@@ -51,8 +51,8 @@ class ImagesKit:
         idx = max(0, min(score-1, len(self.stars)-1))
         return self.stars[idx]
 
-    def scaled(self, surf, scale):
-        k = (id(surf), round(scale,3))
+    def scaled(self, surf, scale, scale_precision=3):
+        k = (id(surf), round(scale,scale_precision))
         if k in self._scale_cache:
             return self._scale_cache[k]
         w, h = surf.get_width(), surf.get_height()
@@ -78,15 +78,13 @@ class Waka:
         self.rowing = False
         self.net_frames = net_frames
         self.last_boost_t = 0
-        self.boost_ms = 140
-        self.BOOST = THRUST * 10  # tweak to taste
         self.stroke_state = "ready"   # ready|charging|cooldown
         self.stroke_t0 = 0
         self.stroking = False
         self.stroke_start = 0
-        self.STROKE_MS = 300  # length of one stroke
-        self.STROKE_THRUST = THRUST * 2.8  # tweak
-        self.stroke_frame_ms = max(1, int(self.STROKE_MS / len(self.frames)))
+        self.stroke_ms = 300  # length of one stroke
+        self.stroke_thrust = 0.336
+        self.stroke_frame_ms = max(1, int(self.stroke_ms / len(self.frames)))
         self.splash_snds = splash_snds
         self.splash_cd = 260  # ms between splashes
         self.last_splash = 0
@@ -124,7 +122,7 @@ class Waka:
             self.rowing = True
             self.last_frame_tick = now
         else:
-            self.rowing = False  # too short, no boost
+            self.rowing = False
         self.stroke_state = "cooldown"
         self.stroke_t0 = now
 
@@ -135,10 +133,10 @@ class Waka:
         self._update_nets()
 
         # movement, cannot row if nets are out
-        if self.stroking and not self.net_active() and now - self.stroke_start <= self.STROKE_MS:
+        if self.stroking and not self.net_active() and now - self.stroke_start <= self.stroke_ms:
             r = math.radians(self.ang)
-            self.vx += math.cos(r) * self.STROKE_THRUST
-            self.vy += math.sin(r) * self.STROKE_THRUST
+            self.vx += math.cos(r) * self.stroke_thrust
+            self.vy += math.sin(r) * self.stroke_thrust
             self.rowing = True
             if now - self.last_frame_tick >= self.stroke_frame_ms:
                 self.frame_idx = (self.frame_idx + 1) % len(self.frames)
@@ -350,7 +348,8 @@ class UiKit:
     def __init__(self, screen, border_surface,
                  button_fill=MAORI_RED, text_color=BRT_WHITE,
                  outline_idle=DARK_GRAY, corner_radius=14,
-                 bg_color=OFF_WHITE, font_name=None, font_sizes=None):
+                 bg_color=OFF_WHITE, font_name="fonts/DejaVuSans.ttf", font_sizes=None,
+                 ui_scale=0.70):
         self.screen = screen
         self.border_src = border_surface.convert_alpha()
         self.button_fill = button_fill
@@ -359,21 +358,26 @@ class UiKit:
         self.radius = corner_radius
         self.bg_color = bg_color
         self.title = "Tākaro Waka"
-        self.subtitle = "it's matariki time!"
+        self.subtitle = "Nau mai ki Matariki! It's Matariki time!"
         self._border_cache = {}
 
-        # fonts
         h = max(1, screen.get_height())
-        scale = max(0.6, h / 680.0)
+        auto = max(0.6, h / 680.0)
+        scale = ui_scale if ui_scale is not None else auto
+
         base = {"title": 96, "subtitle": 56, "button": 48, "hud": 24}
         if font_sizes:
             base.update(font_sizes)
-        self.fonts = {
-            k: pygame.font.SysFont(font_name, max(12, int(v*scale)))
-            for k, v in base.items()
-        }
 
-    def font(self, key): return self.fonts[key]
+        def make(size):
+            size = max(12, int(size * scale))
+            return (pygame.font.Font(font_name, size)
+                    if font_name else pygame.font.SysFont(None, size))
+
+        self.fonts = {k: make(v) for k, v in base.items()}
+
+    def font(self, key):
+        return self.fonts[key]
 
     def render_center(self, key, text, color, center):
         surf = self.fonts[key].render(text, True, color)
@@ -381,7 +385,7 @@ class UiKit:
         self.screen.blit(surf, rect)
         return rect
 
-    def _draw_border(self, scale=0.8):
+    def _draw_border(self, scale=0.95):
         if scale not in self._border_cache:
             bw, bh = self.border_src.get_size()
             surf = pygame.transform.smoothscale(
@@ -407,76 +411,15 @@ class UiKit:
                          box, width=4, border_radius=self.radius)
         self.screen.blit(surf, rect.topleft)
 
-    async def show_menu(self, border_scale=0.9, overlay_alpha=120, fps=60):
-        clock = pygame.time.Clock()
-        # build buttons
-        items = [("Play","play"), ("How to play","how"), ("Quit","quit")]
-        btns = [self._make_button(lbl) for (lbl, _) in items]
-
-        while True:
-            dt = clock.tick(fps)
-            mouse = pygame.mouse.get_pos()
-            clicked = False
-            choice = None
-
-            for e in pygame.event.get():
-                if e.type == pygame.QUIT:
-                    return "quit"
-                if e.type == pygame.KEYDOWN:
-                    if e.key == pygame.K_RETURN:
-                        return items[0][1]  # default to first item
-                    if e.key == pygame.K_ESCAPE:
-                        return "quit"
-                    if e.key == pygame.K_h:
-                        # optional hotkey for how to play if present
-                        for lbl, val in items:
-                            if lbl.lower().startswith("how"):
-                                return val
-                if e.type == pygame.MOUSEBUTTONDOWN and e.button == 1:
-                    clicked = True
-
-            # background + border
-            self.screen.fill(self.bg_color)
-            bimg, brect = self._draw_border(border_scale)
-            self.screen.blit(bimg, brect)
-
-            # overlay
-            overlay = pygame.Surface((self.screen.get_width(), self.screen.get_height()), pygame.SRCALPHA)
-            overlay.fill((0,0,0,overlay_alpha))
-            self.screen.blit(overlay, (0,0))
-
-            # titles
-            cx, cy = self.screen.get_width()//2, self.screen.get_height()//2
-            self.render_center("title", self.title, EGG_SHELL, (cx, cy-160))
-            self.render_center("subtitle", self.subtitle, BRT_WHITE, (cx, cy-100))
-
-            # buttons
-            spacing = 80
-            start_y = cy + 10
-            centers = [(cx, start_y + i*spacing) for i in range(len(btns))]
-            for (surf, rect, box), (_, val), ctr in zip(btns, items, centers):
-                hit = pygame.Rect(0,0, box.w, box.h); hit.center = ctr
-                over = hit.collidepoint(mouse)
-                self._draw_button(ctr, surf, rect, box, over)
-                if over and clicked:
-                    choice = val
-
-            pygame.display.flip()
-            await asyncio.sleep(0)
-
-            if choice:
-                return choice
-    
-    def sky_color(self, start_time, cycle_length=TIME_LIMIT, stops=None):
-        """
-        Returns an (r,g,b) based on elapsed time across color stops.
-        """
+    def sky_color(self, start_time, cycle_length=60, stops=None,
+                  morning_clr=(135,206,250), daytime_clr=(0,191,255),
+                  evening_clr=(255,204,153), nighttm_clr=(0,0,20)):
         if stops is None:
             stops = [
-                (0.00, (135,206,250)),  # morning
-                (0.25, (0,191,255)),    # day
-                (0.50, (255,204,153)),  # sunset
-                (1.00, (0,0,20)),       # night
+                (0.00, morning_clr),
+                (0.25, daytime_clr),
+                (0.50, evening_clr),
+                (1.00, nighttm_clr),
             ]
         elapsed = time.time() - start_time
         t = max(0.0, min(1.0, elapsed / float(cycle_length)))
@@ -492,8 +435,215 @@ class UiKit:
                 )
         return stops[-1][1]
 
-    def fill_sky(self, start_time, cycle_length=TIME_LIMIT, stops=None):
+    def fill_sky(self, start_time, cycle_length=60, stops=None):
         self.screen.fill(self.sky_color(start_time, cycle_length, stops))
+
+    def _blit_matariki_stars(self, star_imgs, y, max_h=56, gap=12, alpha=220):
+        scaled = []
+        for im in star_imgs:
+            h = im.get_height()
+            s = max_h / float(h)
+            out = pygame.transform.smoothscale(
+                im, (int(im.get_width()*s), int(h*s))
+            ).convert_alpha()
+            out.set_alpha(alpha)
+            scaled.append(out)
+        total_w = sum(i.get_width() for i in scaled) + gap*(len(scaled)-1)
+        x = (self.screen.get_width() - total_w)//2
+        for im in scaled:
+            self.screen.blit(im, (x, y - im.get_height()//2))
+            x += im.get_width() + gap
+
+    def draw_end(self, msg, stars=None, border_scale=0.99, overlay_alpha=140,
+                 stars_h=56, stars_gap=12):
+        self.screen.fill(self.bg_color)
+        bimg, brect = self._draw_border(border_scale)
+        self.screen.blit(bimg, brect)
+        overlay = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+        overlay.fill((0,0,0,overlay_alpha))
+        self.screen.blit(overlay, (0,0))
+        cx, cy = self.screen.get_width()//2, self.screen.get_height()//2
+        self.render_center("title", self.title, EGG_SHELL, (cx, cy-100))
+        self.render_center("subtitle", msg, BRT_WHITE, (cx, cy-40))
+        if stars:
+            self._blit_matariki_stars(stars, y=cy+40, max_h=stars_h, gap=stars_gap)
+
+    async def show_dialog(self, items, title=None, subtitle="", border_scale=0.99,
+                          overlay_alpha=120, fps=60, stars=None, stars_h=100,
+                          stars_gap=12, button_start_y=40, button_spacing=80,
+                          first_button_offset=0, title_y=-200, subtitle_y=-160):
+        clock = pygame.time.Clock()
+        btns = [self._make_button(lbl) for (lbl, _) in items]
+
+        while True:
+            clock.tick(fps)
+            mouse = pygame.mouse.get_pos()
+            clicked = False
+            for e in pygame.event.get():
+                if e.type == pygame.QUIT:
+                    hard_quit()
+                if e.type == pygame.KEYDOWN:
+                    if e.key == pygame.K_RETURN:
+                        return items[0][1]
+                    if e.key == pygame.K_ESCAPE:
+                        return items[-1][1]
+                if e.type == pygame.MOUSEBUTTONDOWN and e.button == 1:
+                    clicked = True
+
+            self.screen.fill(self.bg_color)
+            bimg, brect = self._draw_border(border_scale)
+            self.screen.blit(bimg, brect)
+            overlay = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+            overlay.fill((0,0,0,overlay_alpha))
+            self.screen.blit(overlay, (0,0))
+
+            cx, cy = self.screen.get_width()//2, self.screen.get_height()//2
+            self.render_center("title", title or self.title, EGG_SHELL, (cx, cy + title_y))
+            self.render_center("subtitle", subtitle, BRT_WHITE, (cx, cy + subtitle_y))
+
+            # auto tweak for the final end menu with all nine stars
+            nine_stars = bool(stars) and len(stars) >= 9
+            local_stars_h = max(stars_h, 84) if nine_stars else stars_h
+            local_button_start_y = max(button_start_y, 120) if nine_stars else button_start_y
+
+            if stars:
+                self._blit_matariki_stars(stars, y=cy-20, max_h=local_stars_h, gap=stars_gap)
+
+            base_y = cy + local_button_start_y + first_button_offset
+
+            for i, ((surf, rect, box), (_, val)) in enumerate(zip(btns, items)):
+                y = base_y + i * button_spacing
+                ctr = (cx, y)
+                hit = pygame.Rect(0,0, box.w, box.h); hit.center = ctr
+                over = hit.collidepoint(mouse)
+                self._draw_button(ctr, surf, rect, box, over)
+                if over and clicked:
+                    return val
+
+            pygame.display.flip()
+            await asyncio.sleep(0)
+
+    async def show_menu(self):
+        return await self.show_dialog(
+            [("Play","play"), ("How to play","how"), ("Quit","quit")],
+            title=self.title, subtitle=self.subtitle, title_y=-210, subtitle_y=-150
+        )
+    
+    async def show_end_result(self, collected_stars, total=9,
+                            subtitle_win="Ka pai e hoa, 9 whetū complete!",
+                            subtitle_lose="Aroha mai. Try again!",
+                            star_h = 140, btn_y = 140):
+        n = len(collected_stars) if collected_stars else 0
+        win = (n >= total)
+        msg = subtitle_win if win else f"{subtitle_lose} {n}/9 whetū. You caught {n}/{total}."
+
+        return await self.show_dialog(
+            [("Replay","replay"), ("Quit","quit")],
+            title=self.title,
+            subtitle=msg,
+            stars=collected_stars,   # only the ones they actually got
+            stars_h=star_h,
+            button_start_y=btn_y,
+            button_spacing=90,
+            title_y=-210, subtitle_y=-150
+        )
+    
+    def _blit_lines_left(self, key, lines, x, y, color):
+        f = self.fonts[key]; lh = f.get_height() + 8
+        for ln in lines:
+            self.screen.blit(f.render(ln, True, color), (x, y))
+            y += lh
+
+    async def show_info_slide(self, title, lines, img_path,
+                            line_font_key="button",
+                            border_scale=0.99, overlay_alpha=110, fps=60,
+                            left_ratio=0.52, lines_y_offset=80,
+                            button_label="next", button_bottom_margin=140):
+        clock = pygame.time.Clock()
+        img = pygame.image.load(img_path).convert_alpha()
+        btn_surf, btn_rect, btn_box = self._make_button(button_label)
+
+        while True:
+            clock.tick(fps)
+            mouse = pygame.mouse.get_pos(); clicked = False
+            for e in pygame.event.get():
+                if e.type == pygame.QUIT: hard_quit() 
+                if e.type == pygame.KEYDOWN:
+                    if e.key in (pygame.K_RETURN, pygame.K_SPACE): return "next"
+                    if e.key == pygame.K_ESCAPE: return "back"
+                if e.type == pygame.MOUSEBUTTONDOWN and e.button == 1:
+                    clicked = True
+
+            self.screen.fill(self.bg_color)
+            bimg, brect = self._draw_border(border_scale)
+            self.screen.blit(bimg, brect)
+            overlay = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+            overlay.fill((0,0,0,overlay_alpha)); self.screen.blit(overlay, (0,0))
+
+            pad = 28
+            content = brect.inflate(-pad*2, -pad*2)
+            left_w = int(content.w * left_ratio)
+            text_x = content.left + 8
+            text_y = content.top + 8
+
+            title_surf = self.fonts["subtitle"].render(title, True, EGG_SHELL)
+            self.screen.blit(title_surf, (text_x, text_y))
+            self._blit_lines_left(line_font_key, lines,
+                                text_x, text_y + title_surf.get_height() + lines_y_offset, BRT_WHITE)
+
+            img_area = pygame.Rect(content.left + left_w + 16, content.top,
+                                content.w - left_w - 16, content.h - 80)
+            scale = min(img_area.w / img.get_width(), img_area.h / img.get_height(), 1.0)
+            pic = pygame.transform.smoothscale(img, (int(img.get_width()*scale), int(img.get_height()*scale)))
+            self.screen.blit(pic, pic.get_rect(center=img_area.center))
+
+            cx = self.screen.get_width() // 2
+            by = brect.bottom - button_bottom_margin
+            hit = pygame.Rect(0,0, btn_box.w, btn_box.h); hit.center = (cx, by)
+            over = hit.collidepoint(mouse)
+            self._draw_button((cx, by), btn_surf, btn_rect, btn_box, over)
+            if over and clicked: return "next"
+
+            pygame.display.flip()
+            await asyncio.sleep(0)
+
+    async def show_howto(self):
+        # Slide 1 — Goal
+        lines1 = [
+            "• Catch 9 ika",
+            "• Tāne tosses them ki te rangi",
+            "• They become the Matariki whetū",
+            "• Beat the sunset",
+        ]
+        res = await self.show_info_slide("Goal  Whāinga", lines1,
+                                        "images/howto/scene_1.png",
+                                        line_font_key="button",
+                                        button_bottom_margin=140,
+                                        lines_y_offset=80)
+        if res in ("quit", "back"): return res
+
+        # Slide 2 — Controls
+        lines2 = [
+            "• Row press ↑   Pēhi ↑ ki te hoe",
+            "• Turn press ← →   Huri i te waka",
+            "• Nets press Space to open the kupenga",
+            "• You can't row while nets are out",
+        ]
+        return await self.show_info_slide("Controls  Ngā Mana Whakahaere", lines2,
+                                        "images/howto/scene_2.png",
+                                        line_font_key="button",
+                                        button_bottom_margin=140,
+                                        lines_y_offset=80)
+    
+    async def show_difficulty(self):
+        return await self.show_dialog(
+            [("Easy","easy"), ("Medium","medium"), ("Hard","hard"), ("Quit","quit")],
+            title=self.title,
+            subtitle="Select difficulty",
+            button_start_y=-10,   # drop buttons a bit
+            button_spacing=90,    # roomy stack
+            subtitle_y=-100,
+        )
 
 class SoundKit:
     def __init__(self, base="sounds", volumes=None, num_channels=16):
@@ -572,6 +722,18 @@ class SoundKit:
 
 
 
+def set_params(diff):
+    global TIME_LIMIT, FISH_LIFE
+    if diff == "easy":
+        TIME_LIMIT, FISH_LIFE = 120, 5.0
+    elif diff == "medium":
+        TIME_LIMIT, FISH_LIFE = 60, 4.0
+    else:
+        TIME_LIMIT, FISH_LIFE = 30, 3.0
+
+def hard_quit():
+    pygame.quit()
+    sys.exit()
 
 async def main():
     pygame.mixer.init()
@@ -580,14 +742,36 @@ async def main():
     ik = ImagesKit()
     ui = UiKit(screen, ik.border)
 
-    # Main menu
-    choice = await ui.show_menu()
-    if choice == "quit":
-        pygame.quit()
-        return
+    # main menu
+    # main menu loop
+    while True:
+        choice = await ui.show_menu()
+
+        if choice == "quit":
+            hard_quit()
+
+        if choice == "how":
+            await ui.show_howto()
+            continue  # back to menu
+
+        if choice == "play":
+            diff = await ui.show_difficulty()
+            if diff in ("easy","medium","hard"):
+                set_params(diff)
+                break      # proceed to game state
+            else:
+                continue   # back to menu
+
+
+
+    # game state
+    END_DELAY_MS = 800
+    state = "play"  # play | ending
+    end_start_ms = None
+    end_msg = ""
 
     clock = pygame.time.Clock()
-    font = pygame.font.SysFont(None, 24)
+    font = ui.fonts["hud"]
 
     waka = Waka(
         W/2, H/2,
@@ -595,24 +779,38 @@ async def main():
         frames=ik.waka_frames,
         net_frames=ik.net_frames
     )
-    
+
     wake_small = WakeTrail(ik.wake_small, start_scale=0.7, end_scale=1.2)
     wake_big   = WakeTrail(ik.wake_big,   start_scale=0.8, end_scale=1.25)
-    row_wake   = WakeTrail(ik.rowing_wake,start_scale=0.9, end_scale=1.3, back_offset=0, life_ms=1000)
- 
+    row_wake   = WakeTrail(ik.rowing_wake, start_scale=0.9, end_scale=1.3, back_offset=0, life_ms=1000)
+
     fish = None
     score = 0
     start = time.time()
     catch_effect = None
     row_wake_due = None
+    cheat_center = False
 
+    freeze_frame = None
     running = True
     while running:
         dt = clock.tick(FPS)
+
+        # events
         for e in pygame.event.get():
             if e.type == pygame.QUIT:
-                running = False
-            elif e.type == pygame.KEYDOWN and e.key == pygame.K_UP:
+                hard_quit()
+
+            # cheat toggle always allowed
+            elif e.type == pygame.KEYDOWN and e.key in (pygame.K_9, pygame.K_KP9):
+                cheat_center = True
+            elif e.type == pygame.KEYUP and e.key in (pygame.K_9, pygame.K_KP9):
+                cheat_center = False
+
+            if state != "play":
+                continue  # inputs frozen when ending
+
+            if e.type == pygame.KEYDOWN and e.key == pygame.K_UP:
                 if not waka.stroking and not waka.net_active():
                     waka.stroking = True
                     waka._play_splash()
@@ -621,7 +819,6 @@ async def main():
             elif e.type == pygame.KEYUP and e.key == pygame.K_UP:
                 waka.stroking = False
 
-            # nets control
             elif e.type == pygame.KEYDOWN and e.key == pygame.K_SPACE:
                 s = snd.random_net()
                 if s: s.play()
@@ -633,17 +830,37 @@ async def main():
                 if waka.net_state in ("extending", "held"):
                     waka.net_state = "retracting"
 
+        # ending state: delay, then dialog
+        if state == "ending":
+            collected_stars = ik.stars[:score]
+            choice = await ui.show_end_result(collected_stars, total=9)
+            if choice == "replay":
+                # reset
+                score = 0; fish = None; catch_effect = None; row_wake_due = None
+                start = time.time()
+                waka = Waka(W/2, H/2, splash_snds=snd.row_splashes,
+                            frames=ik.waka_frames, net_frames=ik.net_frames)
+                wake_small = WakeTrail(ik.wake_small, start_scale=0.7, end_scale=1.2)
+                wake_big   = WakeTrail(ik.wake_big,   start_scale=0.8, end_scale=1.25)
+                row_wake   = WakeTrail(ik.rowing_wake, start_scale=0.9, end_scale=1.3, back_offset=0, life_ms=1000)
+                state = "play"
+                continue
+            else:
+                running = False
+                continue
+
+        # gameplay update
         keys = pygame.key.get_pressed()
         waka.handle_input(keys)
         waka.update()
 
-        # schedule the single rowing wake once per initial press
-        if row_wake_due and pygame.time.get_ticks() >= row_wake_due:  # NEW
+        # schedule single rowing wake once per initial press
+        if row_wake_due and pygame.time.get_ticks() >= row_wake_due:
             row_wake.spawn(waka.x, waka.y, waka.ang)
             row_wake_due = None
 
-        # spawn wake continuously while rowing
-        wake_small.spawn(waka.x, waka.y, waka.ang) 
+        # spawn wakes
+        wake_small.spawn(waka.x, waka.y, waka.ang)
         if waka.rowing and not waka.net_active():
             wake_big.spawn(waka.x, waka.y, waka.ang)
 
@@ -651,30 +868,31 @@ async def main():
         wake_big.update(dt)
         row_wake.update(dt)
 
+        # fish spawn
         now = time.time()
         if fish is None and random.random() < 0.02:
-            fish = Fish(
-                random.randint(FISH_UPPERBOUND,W-FISH_UPPERBOUND),
-                random.randint(FISH_LOWERBOUND,H-FISH_UPPERBOUND),
-                base_frames=ik.fish_frames,
-                splash_snds=snd.fish_splashes,
-            )
+            sx = W//2 if cheat_center else random.randint(FISH_UPPERBOUND, W - FISH_UPPERBOUND)
+            sy = H//2 if cheat_center else random.randint(FISH_LOWERBOUND, H - FISH_UPPERBOUND)
+            fish = Fish(sx, sy, base_frames=ik.fish_frames, splash_snds=snd.fish_splashes)
         elif fish and not fish.alive:
             fish = None
 
         if fish:
+            if cheat_center:
+                fish.x, fish.y = W//2, H//2
             fish.update()
 
+        # catch check
         if fish and waka.try_catch(fish):
             score += 1
             snd.play_coin()
             snd.say_count(score)
             star_img = ik.star_for_score(score)
-            catch_effect = CatchEffect(fish.x, fish.y, star_img)    
+            catch_effect = CatchEffect(fish.x, fish.y, star_img)
             fish = None
-            
-        ui.fill_sky(start)
 
+        # draw
+        ui.fill_sky(start, cycle_length=TIME_LIMIT)
         if catch_effect:
             catch_effect.update(dt)
             catch_effect.draw(screen)
@@ -684,28 +902,26 @@ async def main():
         if fish:
             fish.draw(screen)
 
-        # Draw images in order from bottom to top most
-        row_wake.draw(screen) 
+        row_wake.draw(screen)
         wake_small.draw(screen)
         wake_big.draw(screen)
         waka.draw(screen)
 
-        remaining = max(0, int(TIME_LIMIT - (now-start)))
-        txt = f"Fish {score}/{TARGET}   Time {remaining}s"
-        screen.blit(font.render(txt, True, BRT_WHITE), (10,10))
+        remaining = max(0, int(TIME_LIMIT - (now - start)))
+        hud = f"Fish {score}/{TARGET}   Time {remaining}s"
+        screen.blit(font.render(hud, True, BRT_WHITE), (10, 10))
 
+        # end trigger
         if score >= TARGET or remaining <= 0:
-            msg = "Ka pai! Feast ready." if score>=TARGET else "Kua pau te wā."
-            screen.blit(font.render(msg, True, BRT_WHITE), (W//2-100, H//2))
-            pygame.display.flip()
-            await asyncio.sleep(1.5)
-            running = False
+            waka.vx = waka.vy = 0.0
+            waka.rowing = waka.stroking = False
+            state = "ending"
 
         pygame.display.flip()
-        clock.tick(FPS)
         await asyncio.sleep(0)
 
-    pygame.quit()
+    hard_quit()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
