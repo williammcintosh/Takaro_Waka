@@ -525,7 +525,7 @@ class UiKit:
 
     async def show_menu(self):
         return await self.show_dialog(
-            [("Play","play"), ("How to play","how"), ("Quit","quit")],
+            [("Play","play"), ("How to play","how")],
             title=self.title, subtitle=self.subtitle, title_y=-210, subtitle_y=-150
         )
     
@@ -538,16 +538,16 @@ class UiKit:
         msg = subtitle_win if win else f"{subtitle_lose} {n}/9 whetū. You caught {n}/{total}."
 
         return await self.show_dialog(
-            [("Replay","replay"), ("Quit","quit")],
+            [("Replay","replay"), ("Main menu","menu")],
             title=self.title,
             subtitle=msg,
-            stars=collected_stars,   # only the ones they actually got
+            stars=collected_stars,
             stars_h=star_h,
             button_start_y=btn_y,
             button_spacing=90,
             title_y=-210, subtitle_y=-150
         )
-    
+            
     def _blit_lines_left(self, key, lines, x, y, color):
         f = self.fonts[key]; lh = f.get_height() + 8
         for ln in lines:
@@ -637,11 +637,11 @@ class UiKit:
     
     async def show_difficulty(self):
         return await self.show_dialog(
-            [("Easy","easy"), ("Medium","medium"), ("Hard","hard"), ("Quit","quit")],
+            [("Easy","easy"), ("Medium","medium"), ("Hard","hard"), ("Main menu","menu")],
             title=self.title,
             subtitle="Select difficulty",
-            button_start_y=-10,   # drop buttons a bit
-            button_spacing=90,    # roomy stack
+            button_start_y=-10,
+            button_spacing=90,
             subtitle_y=-100,
         )
 
@@ -743,185 +743,181 @@ async def main():
     ik = ImagesKit()
     ui = UiKit(screen, ik.border)
 
-    # main menu
-    # main menu loop
-    while True:
-        choice = await ui.show_menu()
+    
+    while True:  # outer loop so we can return to the main menu anytime
+        while True:
+            choice = await ui.show_menu()
 
-        if choice == "quit":
-            hard_quit()
+            if choice == "how":
+                await ui.show_howto()
+                continue  # back to menu
 
-        if choice == "how":
-            await ui.show_howto()
-            continue  # back to menu
-
-        if choice == "play":
-            diff = await ui.show_difficulty()
-            if diff in ("easy","medium","hard"):
-                set_params(diff)
-                break      # proceed to game state
-            else:
-                continue   # back to menu
+            if choice == "play":
+                diff = await ui.show_difficulty()
+                if diff in ("easy","medium","hard"):
+                    set_params(diff)
+                    break      # proceed to game state
+                else:
+                    continue   # back to menu
 
 
 
-    # game state
-    END_DELAY_MS = 800
-    state = "play"  # play | ending
-    end_start_ms = None
-    end_msg = ""
+        # game state
+        END_DELAY_MS = 800
+        state = "play"  # play | ending
+        end_start_ms = None
+        end_msg = ""
 
-    clock = pygame.time.Clock()
-    font = ui.fonts["hud"]
+        clock = pygame.time.Clock()
+        font = ui.fonts["hud"]
 
-    waka = Waka(
-        W/2, H/2,
-        splash_snds=snd.row_splashes,
-        frames=ik.waka_frames,
-        net_frames=ik.net_frames
-    )
+        waka = Waka(
+            W/2, H/2,
+            splash_snds=snd.row_splashes,
+            frames=ik.waka_frames,
+            net_frames=ik.net_frames
+        )
 
-    wake_small = WakeTrail(ik.wake_small, start_scale=0.7, end_scale=1.2)
-    wake_big   = WakeTrail(ik.wake_big,   start_scale=0.8, end_scale=1.25)
-    row_wake   = WakeTrail(ik.rowing_wake, start_scale=0.9, end_scale=1.3, back_offset=0, life_ms=1000)
+        wake_small = WakeTrail(ik.wake_small, start_scale=0.7, end_scale=1.2)
+        wake_big   = WakeTrail(ik.wake_big,   start_scale=0.8, end_scale=1.25)
+        row_wake   = WakeTrail(ik.rowing_wake, start_scale=0.9, end_scale=1.3, back_offset=0, life_ms=1000)
 
-    fish = None
-    score = 0
-    start = time.time()
-    catch_effect = None
-    row_wake_due = None
-    cheat_center = False
+        fish = None
+        score = 0
+        start = time.time()
+        catch_effect = None
+        row_wake_due = None
+        cheat_center = False
 
-    freeze_frame = None
-    running = True
-    while running:
-        dt = clock.tick(FPS)
+        freeze_frame = None
+        running = True
+        while running:
+            dt = clock.tick(FPS)
 
-        # events
-        for e in pygame.event.get():
-            if e.type == pygame.QUIT:
-                hard_quit()
+            # events
+            for e in pygame.event.get():
+                if e.type == pygame.QUIT:
+                    hard_quit()
 
-            # cheat toggle always allowed
-            elif e.type == pygame.KEYDOWN and e.key in (pygame.K_9, pygame.K_KP9):
-                cheat_center = True
-            elif e.type == pygame.KEYUP and e.key in (pygame.K_9, pygame.K_KP9):
-                cheat_center = False
+                # cheat toggle always allowed
+                elif e.type == pygame.KEYDOWN and e.key in (pygame.K_9, pygame.K_KP9):
+                    cheat_center = True
+                elif e.type == pygame.KEYUP and e.key in (pygame.K_9, pygame.K_KP9):
+                    cheat_center = False
 
-            if state != "play":
-                continue  # inputs frozen when ending
+                if state != "play":
+                    continue  # inputs frozen when ending
 
-            if e.type == pygame.KEYDOWN and e.key == pygame.K_UP:
-                if not waka.stroking and not waka.net_active():
-                    waka.stroking = True
-                    waka._play_splash()
-                    waka.stroke_start = pygame.time.get_ticks()
-                    row_wake_due = pygame.time.get_ticks() + ROW_WAKE_DELAY_MS
-            elif e.type == pygame.KEYUP and e.key == pygame.K_UP:
-                waka.stroking = False
+                if e.type == pygame.KEYDOWN and e.key == pygame.K_UP:
+                    if not waka.stroking and not waka.net_active():
+                        waka.stroking = True
+                        waka._play_splash()
+                        waka.stroke_start = pygame.time.get_ticks()
+                        row_wake_due = pygame.time.get_ticks() + ROW_WAKE_DELAY_MS
+                elif e.type == pygame.KEYUP and e.key == pygame.K_UP:
+                    waka.stroking = False
 
-            elif e.type == pygame.KEYDOWN and e.key == pygame.K_SPACE:
-                s = snd.random_net()
-                if s: s.play()
-                if waka.net_state in ("idle", "retracting"):
-                    waka.net_state = "extending"
-            elif e.type == pygame.KEYUP and e.key == pygame.K_SPACE:
-                s = snd.random_net()
-                if s: s.play()
-                if waka.net_state in ("extending", "held"):
-                    waka.net_state = "retracting"
+                elif e.type == pygame.KEYDOWN and e.key == pygame.K_SPACE:
+                    s = snd.random_net()
+                    if s: s.play()
+                    if waka.net_state in ("idle", "retracting"):
+                        waka.net_state = "extending"
+                elif e.type == pygame.KEYUP and e.key == pygame.K_SPACE:
+                    s = snd.random_net()
+                    if s: s.play()
+                    if waka.net_state in ("extending", "held"):
+                        waka.net_state = "retracting"
 
-        # ending state: delay, then dialog
-        if state == "ending":
-            collected_stars = ik.stars[:score]
-            choice = await ui.show_end_result(collected_stars, total=9)
-            if choice == "replay":
-                # reset
-                score = 0; fish = None; catch_effect = None; row_wake_due = None
-                start = time.time()
-                waka = Waka(W/2, H/2, splash_snds=snd.row_splashes,
-                            frames=ik.waka_frames, net_frames=ik.net_frames)
-                wake_small = WakeTrail(ik.wake_small, start_scale=0.7, end_scale=1.2)
-                wake_big   = WakeTrail(ik.wake_big,   start_scale=0.8, end_scale=1.25)
-                row_wake   = WakeTrail(ik.rowing_wake, start_scale=0.9, end_scale=1.3, back_offset=0, life_ms=1000)
-                state = "play"
-                continue
-            else:
-                running = False
-                continue
+            # ending state: delay, then dialog
+            if state == "ending":
+                collected_stars = ik.stars[:score]
+                choice = await ui.show_end_result(collected_stars, total=9)
+                if choice == "replay":
+                    # reset
+                    score = 0; fish = None; catch_effect = None; row_wake_due = None
+                    start = time.time()
+                    waka = Waka(W/2, H/2, splash_snds=snd.row_splashes,
+                                frames=ik.waka_frames, net_frames=ik.net_frames)
+                    wake_small = WakeTrail(ik.wake_small, start_scale=0.7, end_scale=1.2)
+                    wake_big   = WakeTrail(ik.wake_big,   start_scale=0.8, end_scale=1.25)
+                    row_wake   = WakeTrail(ik.rowing_wake, start_scale=0.9, end_scale=1.3, back_offset=0, life_ms=1000)
+                    state = "play"
+                    continue
+                else:
+                    running = False
+                    continue
 
-        # gameplay update
-        keys = pygame.key.get_pressed()
-        waka.handle_input(keys)
-        waka.update()
+            # gameplay update
+            keys = pygame.key.get_pressed()
+            waka.handle_input(keys)
+            waka.update()
 
-        # schedule single rowing wake once per initial press
-        if row_wake_due and pygame.time.get_ticks() >= row_wake_due:
-            row_wake.spawn(waka.x, waka.y, waka.ang)
-            row_wake_due = None
+            # schedule single rowing wake once per initial press
+            if row_wake_due and pygame.time.get_ticks() >= row_wake_due:
+                row_wake.spawn(waka.x, waka.y, waka.ang)
+                row_wake_due = None
 
-        # spawn wakes
-        wake_small.spawn(waka.x, waka.y, waka.ang)
-        if waka.rowing and not waka.net_active():
-            wake_big.spawn(waka.x, waka.y, waka.ang)
+            # spawn wakes
+            wake_small.spawn(waka.x, waka.y, waka.ang)
+            if waka.rowing and not waka.net_active():
+                wake_big.spawn(waka.x, waka.y, waka.ang)
 
-        wake_small.update(dt)
-        wake_big.update(dt)
-        row_wake.update(dt)
+            wake_small.update(dt)
+            wake_big.update(dt)
+            row_wake.update(dt)
 
-        # fish spawn
-        now = time.time()
-        if fish is None and random.random() < 0.02:
-            sx = W//2 if cheat_center else random.randint(FISH_UPPERBOUND, W - FISH_UPPERBOUND)
-            sy = H//2 if cheat_center else random.randint(FISH_LOWERBOUND, H - FISH_UPPERBOUND)
-            fish = Fish(sx, sy, base_frames=ik.fish_frames, splash_snds=snd.fish_splashes)
-        elif fish and not fish.alive:
-            fish = None
+            # fish spawn
+            now = time.time()
+            if fish is None and random.random() < 0.02:
+                sx = W//2 if cheat_center else random.randint(FISH_UPPERBOUND, W - FISH_UPPERBOUND)
+                sy = H//2 if cheat_center else random.randint(FISH_LOWERBOUND, H - FISH_UPPERBOUND)
+                fish = Fish(sx, sy, base_frames=ik.fish_frames, splash_snds=snd.fish_splashes)
+            elif fish and not fish.alive:
+                fish = None
 
-        if fish:
-            if cheat_center:
-                fish.x, fish.y = W//2, H//2
-            fish.update()
+            if fish:
+                if cheat_center:
+                    fish.x, fish.y = W//2, H//2
+                fish.update()
 
-        # catch check
-        if fish and waka.try_catch(fish):
-            score += 1
-            snd.play_coin()
-            snd.say_count(score)
-            star_img = ik.star_for_score(score)
-            catch_effect = CatchEffect(fish.x, fish.y, star_img)
-            fish = None
+            # catch check
+            if fish and waka.try_catch(fish):
+                score += 1
+                snd.play_coin()
+                snd.say_count(score)
+                star_img = ik.star_for_score(score)
+                catch_effect = CatchEffect(fish.x, fish.y, star_img)
+                fish = None
 
-        # draw
-        ui.fill_sky(start, cycle_length=TIME_LIMIT)
-        if catch_effect:
-            catch_effect.update(dt)
-            catch_effect.draw(screen)
-            if catch_effect.done:
-                catch_effect = None
+            # draw
+            ui.fill_sky(start, cycle_length=TIME_LIMIT)
+            if catch_effect:
+                catch_effect.update(dt)
+                catch_effect.draw(screen)
+                if catch_effect.done:
+                    catch_effect = None
 
-        if fish:
-            fish.draw(screen)
+            if fish:
+                fish.draw(screen)
 
-        row_wake.draw(screen)
-        wake_small.draw(screen)
-        wake_big.draw(screen)
-        waka.draw(screen)
+            row_wake.draw(screen)
+            wake_small.draw(screen)
+            wake_big.draw(screen)
+            waka.draw(screen)
 
-        remaining = max(0, int(TIME_LIMIT - (now - start)))
-        hud = f"Fish {score}/{TARGET}   Time {remaining}s"
-        screen.blit(font.render(hud, True, BRT_WHITE), (10, 10))
+            remaining = max(0, int(TIME_LIMIT - (now - start)))
+            hud = f"Fish {score}/{TARGET}   Time {remaining}s"
+            screen.blit(font.render(hud, True, BRT_WHITE), (10, 10))
 
-        # end trigger
-        if score >= TARGET or remaining <= 0:
-            waka.vx = waka.vy = 0.0
-            waka.rowing = waka.stroking = False
-            state = "ending"
+            # end trigger
+            if score >= TARGET or remaining <= 0:
+                waka.vx = waka.vy = 0.0
+                waka.rowing = waka.stroking = False
+                state = "ending"
 
-        pygame.display.flip()
-        await asyncio.sleep(0)
+            pygame.display.flip()
+            await asyncio.sleep(0)
 
-    hard_quit()
 
 
 if __name__ == "__main__":
